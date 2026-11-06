@@ -221,7 +221,9 @@ data class SyllableLineModel(
     val words: List<SyllableWordModel>,
     val isDotLine: Boolean = false,
     val isBgLine: Boolean = false,
-    val isDuoLine: Boolean = false, // True for secondary/duo vocalist (right-aligned)
+    val isDuoLine: Boolean = false,           // True for secondary/duo vocalist (right-aligned)
+    val isLineSyncedOnly: Boolean = false,    // True for LRC / Line-level sync (highlights whole line smoothly)
+    val isPlainTextUnsynced: Boolean = false, // True for static / plain text lyrics without timestamps
     var state: ElementVocalState = ElementVocalState.NotSung,
     var animatedState: ElementVocalState? = null,
     var settling: Boolean = false,
@@ -235,13 +237,13 @@ data class SyllableLineModel(
 class LyricsAnimatorEngine {
     companion object {
         const val LetterGlowMultiplier_Opacity = 185.0
-        const val YOffsetDamping = 0.4
-        const val YOffsetFrequency = 1.45
-        const val ScaleDamping = 0.64
-        const val ScaleFrequency = 0.88
-        const val GlowDamping = 0.56
-        const val GlowFrequency = 1.18
-        const val SungLetterGlow = 0.2
+        const val YOffsetDamping = 0.58
+        const val YOffsetFrequency = 1.65
+        const val ScaleDamping = 0.72
+        const val ScaleFrequency = 1.15
+        const val GlowDamping = 0.74
+        const val GlowFrequency = 1.75
+        const val SungLetterGlow = 0.12
         const val PreHiddenDotLineMs = 450.0
         const val DefaultBlurMultiplier = 1.8f
 
@@ -282,8 +284,8 @@ class LyricsAnimatorEngine {
         val GlowRange = listOf(
             AnimationPoint(0.0, 0.0),
             AnimationPoint(0.15, 1.0),
-            AnimationPoint(0.6, 1.0),
-            AnimationPoint(1.0, 0.0)
+            AnimationPoint(0.65, 1.0),
+            AnimationPoint(1.0, 0.15)
         )
         val DotScaleRange = listOf(
             AnimationPoint(0.0, 0.75),
@@ -374,6 +376,12 @@ class LyricsAnimatorEngine {
     private val dotScaleSpline = getSpline(DotScaleRange)
     private val dotYOffsetSpline = getSpline(DotYOffsetRange)
     private val dotGlowSpline = getSpline(DotGlowRange)
+    private val yOffsetSplineStandard = getSpline(YOffsetRange)
+    private val yOffsetSplineSimple = getSpline(SimpleYOffsetRange)
+    private val letterScaleSplineStandard = getSpline(LetterScaleRange)
+    private val letterScaleSplineSimple = getSpline(SimpleLetterScaleRange)
+    private val letterYOffsetSplineStandard = getSpline(LetterYOffsetRange)
+    private val letterYOffsetSplineSimple = getSpline(SimpleLetterYOffsetRange)
 
     private var lastFrameNanos: Long = 0L
 
@@ -428,6 +436,22 @@ class LyricsAnimatorEngine {
     ): Int {
         if (lines.isEmpty()) return -1
 
+        // If plain text unsynced lyrics, keep all lines readable in Active state with no scroll jumps
+        if (lines.all { it.isPlainTextUnsynced }) {
+            for (line in lines) {
+                line.state = ElementVocalState.Active
+                line.blurAmountPx = 0f
+                for (w in line.words) {
+                    w.state = ElementVocalState.Active
+                    w.fillFraction = 1f
+                    w.currentScale = 1f
+                    w.currentYOffsetEm = 0f
+                    w.currentGlowOpacity = 0f
+                }
+            }
+            return -1
+        }
+
         val dtSeconds = if (lastFrameNanos == 0L) {
             1.0 / 60.0
         } else {
@@ -439,9 +463,9 @@ class LyricsAnimatorEngine {
         val refreshedSimple = simpleLyricsMode && refreshedSimpleLyrics
         val letterRest = if (refreshedSimple) 1.0 else 0.0
 
-        val yOffsetSpline = getSpline(if (simpleLyricsMode) SimpleYOffsetRange else YOffsetRange)
-        val letterScaleSpline = getSpline(if (simpleLyricsMode) SimpleLetterScaleRange else LetterScaleRange)
-        val letterYOffsetSpline = getSpline(if (simpleLyricsMode) SimpleLetterYOffsetRange else LetterYOffsetRange)
+        val yOffsetSpline = if (simpleLyricsMode) yOffsetSplineSimple else yOffsetSplineStandard
+        val letterScaleSpline = if (simpleLyricsMode) letterScaleSplineSimple else letterScaleSplineStandard
+        val letterYOffsetSpline = if (simpleLyricsMode) letterYOffsetSplineSimple else letterYOffsetSplineStandard
         val dotOpacitySpline = getSpline(getDotOpacityRange(simpleLyricsMode))
 
         var activeLineIndex = -1
@@ -463,7 +487,6 @@ class LyricsAnimatorEngine {
             if (activeLineIndex == -1) activeLineIndex = lines.lastIndex
         }
 
-        // Background lines stay visible alongside their lead vocal line
         for (line in lines) {
             line.groupActive = true
         }
@@ -492,6 +515,25 @@ class LyricsAnimatorEngine {
                     ElementVocalState.NotSung -> true
                     ElementVocalState.Sung -> false
                 }
+            }
+
+            // If this is an LRC / Line-synced line, animate the whole line cleanly without fake word splits
+            if (line.isLineSyncedOnly) {
+                for (w in line.words) {
+                    w.state = lineState
+                    w.fillFraction = when (lineState) {
+                        ElementVocalState.NotSung -> 0f
+                        ElementVocalState.Active -> 1f
+                        ElementVocalState.Sung -> 1f
+                    }
+                    w.currentScale = if (lineState == ElementVocalState.Active) 1.015f else 1.0f
+                    w.currentYOffsetEm = 0f
+                    w.currentGlowOpacity = if (lineState == ElementVocalState.Active) {
+                        (0.32f * glowMultiplierUser).coerceIn(0f, 0.85f)
+                    } else 0f
+                    w.currentGlowRadiusPx = 10f
+                }
+                continue
             }
 
             val words = line.words
@@ -529,13 +571,13 @@ class LyricsAnimatorEngine {
                             targetScale = if (simpleLyricsMode) 1.0 else scaleSpline.at(0.0)
                             targetYOffset = yOffsetSpline.at(0.0)
                             targetGlow = 0.0
-                            // Strictly 0.0f when NotSung so not even a single letter is pre-lit!
                             targetFill = 0f
                         }
                         ElementVocalState.Sung -> {
                             targetScale = 1.0
                             targetYOffset = yOffsetSpline.at(1.0)
-                            targetGlow = glowSpline.at(1.0)
+                            // Goal is 0.0, and glowSpring smoothly decays to 0 over ~180ms so glow trails smoothly from word to word!
+                            targetGlow = 0.0
                             targetFill = 1f
                         }
                     }
@@ -550,16 +592,17 @@ class LyricsAnimatorEngine {
 
                     word.scaleSpring!!.setGoal(targetScale)
                     word.yOffsetSpring!!.setGoal(targetYOffset, refreshedSimple)
-                    word.glowSpring!!.setGoal(targetGlow)
+                    word.glowSpring!!.setGoal(targetGlow, instant = wordState == ElementVocalState.NotSung)
 
                     word.currentScale = word.scaleSpring!!.step(dtSeconds).toFloat()
                     word.currentYOffsetEm = word.yOffsetSpring!!.step(dtSeconds).toFloat()
-                    val currentGlow = word.glowSpring!!.step(dtSeconds).toFloat() * glowMultiplierUser
+                    val currentGlow = word.glowSpring!!.step(dtSeconds).toFloat().coerceAtLeast(0f) * glowMultiplierUser
                     word.fillFraction = targetFill
                     word.currentGradientPercent = -50f + 150f * targetFill
-                    word.currentGlowRadiusPx = 4f + 6f * currentGlow
-                    word.currentGlowOpacity = if (wordState == ElementVocalState.Active) {
-                        (currentGlow * 0.45f).coerceIn(0f, 1f)
+                    word.currentGlowRadiusPx = 4f + 8f * currentGlow
+                    // Allow glowSpring's smooth tail when transitioning from Active -> Sung!
+                    word.currentGlowOpacity = if (wordState != ElementVocalState.NotSung) {
+                        (currentGlow * 0.52f).coerceIn(0f, 0.9f)
                     } else 0f
 
                     if (word.letterGroup && word.letters.isNotEmpty()) {
@@ -595,7 +638,6 @@ class LyricsAnimatorEngine {
                             val letterState = getElementState(processedPosition, letter.startTimeMs, letter.endTimeMs)
                             letter.state = letterState
 
-                            // Strictly 0f when NotSung, 0..1 when Active, 1f when Sung
                             val letterFill: Float = when (letterState) {
                                 ElementVocalState.NotSung -> 0f
                                 ElementVocalState.Sung -> 1f
@@ -623,7 +665,7 @@ class LyricsAnimatorEngine {
                             } else {
                                 var lTargetScale = letterScaleSpline.at(if (wordState == ElementVocalState.Sung) 1.0 else letterRest)
                                 var lTargetY = letterYOffsetSpline.at(if (wordState == ElementVocalState.Sung) 1.0 else letterRest)
-                                var lTargetGlow = glowSpline.at(if (wordState == ElementVocalState.Sung) 1.0 else 0.0)
+                                var lTargetGlow = 0.0
 
                                 if (wordState == ElementVocalState.Active && activeLetterIndex != -1) {
                                     val pctCount = if (simpleLyricsMode) percentage else activeLetterPercentage
@@ -634,26 +676,26 @@ class LyricsAnimatorEngine {
                                     val restY = letterYOffsetSpline.at(0.0)
                                     val restGlow = glowSpline.at(0.0)
                                     val dist = abs(k - activeLetterIndex).toDouble()
-                                    val falloff = max(0.0, 1.0 / (1.0 + dist.pow(2.8)))
-                                    val glowFalloff = max(0.0, 1.0 / (1.0 + dist * 0.9))
+                                    val falloff = max(0.0, 1.0 / (1.0 + dist.pow(2.4)))
+                                    val glowFalloff = max(0.0, 1.0 / (1.0 + dist * 0.75))
                                     lTargetScale = restScale + (baseScale - restScale) * falloff
                                     lTargetY = restY + (baseY - restY) * falloff
                                     lTargetGlow = restGlow + (baseGlow - restGlow) * glowFalloff
-                                } else if (letterState == ElementVocalState.Sung && activeLetterIndex == -1) {
+                                } else if (letterState == ElementVocalState.Sung && wordState == ElementVocalState.Active) {
                                     lTargetGlow = glowSpline.at(SungLetterGlow)
                                 }
 
                                 letter.scaleSpring!!.setGoal(lTargetScale)
                                 letter.yOffsetSpring!!.setGoal(lTargetY)
-                                letter.glowSpring!!.setGoal(lTargetGlow)
+                                letter.glowSpring!!.setGoal(lTargetGlow, instant = letterState == ElementVocalState.NotSung)
 
                                 letter.currentScale = letter.scaleSpring!!.step(dtSeconds).toFloat()
                                 letter.currentTranslateXEm = 0f
                                 letter.currentTranslateYEm = (letter.yOffsetSpring!!.step(dtSeconds) * 2.0).toFloat()
-                                val lGlow = letter.glowSpring!!.step(dtSeconds).toFloat() * glowMultiplierUser
+                                val lGlow = letter.glowSpring!!.step(dtSeconds).toFloat().coerceAtLeast(0f) * glowMultiplierUser
                                 letter.currentGlowRadiusPx = 4f + 12f * lGlow
-                                letter.currentGlowOpacity = if (letterState == ElementVocalState.Active) {
-                                    ((lGlow * LetterGlowMultiplier_Opacity) / 100.0).toFloat().coerceIn(0f, 1f)
+                                letter.currentGlowOpacity = if (letterState != ElementVocalState.NotSung) {
+                                    ((lGlow * LetterGlowMultiplier_Opacity) / 100.0).toFloat().coerceIn(0f, 0.9f)
                                 } else 0f
                             }
                         }

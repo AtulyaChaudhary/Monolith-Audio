@@ -96,12 +96,13 @@ fun BottomPlayerAndNavColumn(
             .padding(horizontal = 12.dp, vertical = 6.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        // Persistent Frosted Glass Mini-Player / Studio Deck
+        // Persistent Opaque Material You Mini-Player / Studio Deck
         if (currentTrack != null) {
             FrostedGlassSurface(
                 shape = RoundedCornerShape(22.dp),
                 elevated = true,
                 accentHighlight = true,
+                opaqueModal = true,
                 modifier = Modifier
                     .fillMaxWidth()
                     .clickable { onExpandLyrics() }
@@ -111,7 +112,7 @@ fun BottomPlayerAndNavColumn(
                     val progress = (currentPositionMs.toFloat() / durationMs.toFloat().coerceAtLeast(1f)).coerceIn(0f, 1f)
                     LinearProgressIndicator(
                         progress = { progress },
-                        color = Color.White,
+                        color = MaterialTheme.colorScheme.primary,
                         trackColor = Color.White.copy(alpha = 0.18f),
                         modifier = Modifier
                             .fillMaxWidth()
@@ -124,7 +125,7 @@ fun BottomPlayerAndNavColumn(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        // Crisp Unblurred Album Art
+                        // Crisp Unblurred Full-Color Album Art
                         CrispAlbumArtCover(
                             title = currentTrack.album,
                             subtitle = currentTrack.artist,
@@ -132,6 +133,7 @@ fun BottomPlayerAndNavColumn(
                             coverArtPath = currentTrack.coverArtPath,
                             sizeDp = 46.dp,
                             cornerRadiusDp = 12.dp,
+                            forceFullColor = true,
                             modifier = Modifier.size(46.dp)
                         )
 
@@ -140,7 +142,7 @@ fun BottomPlayerAndNavColumn(
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
                                 text = currentTrack.title,
-                                style = MaterialTheme.typography.titleMedium,
+                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.ExtraBold),
                                 color = Color.White,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
@@ -198,7 +200,7 @@ fun BottomPlayerAndNavColumn(
 
                     Spacer(modifier = Modifier.height(6.dp))
 
-                    // Studio Quick Pills Row: Speed/Pitch (0.1x-5.0x), Synced TTML Lyrics, Queue Drawer
+                    // Studio Quick Pills Row: Speed/Pitch (0.1x-5.0x), Synced Lyrics, Queue Drawer
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -211,7 +213,7 @@ fun BottomPlayerAndNavColumn(
                         )
 
                         MiniPillButton(
-                            text = if (hasCoLocatedTtml) "TTML Lyrics ●" else "TTML Lyrics",
+                            text = if (hasCoLocatedTtml) "Synced Lyrics ●" else "Lyrics Stage",
                             onClick = onExpandLyrics,
                             tag = "open_lyrics_button"
                         )
@@ -226,10 +228,11 @@ fun BottomPlayerAndNavColumn(
             }
         }
 
-        // Bottom Navigation Switcher: All Songs vs Categories
+        // Bottom Navigation Switcher: All Songs vs Categories (Opaque Material You)
         FrostedGlassSurface(
             shape = RoundedCornerShape(22.dp),
             elevated = true,
+            opaqueModal = true,
             modifier = Modifier
                 .fillMaxWidth()
                 .testTag("bottom_navigation_switcher")

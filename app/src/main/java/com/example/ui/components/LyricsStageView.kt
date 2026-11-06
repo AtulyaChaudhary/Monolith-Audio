@@ -1,9 +1,18 @@
 package com.example.ui.components
 
+import android.content.Intent
+import android.net.Uri
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -14,7 +23,6 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -26,36 +34,47 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloseFullscreen
+import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
-import androidx.compose.material.icons.filled.Speed
-import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.BlurredEdgeTreatment
-import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
@@ -64,35 +83,47 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.audio.MusicAudioEngine
 import com.example.data.TrackEntity
 import com.example.lyrics.ElementVocalState
+import com.example.lyrics.LyricsAttributionInfo
 import com.example.lyrics.SyllableLineModel
 import com.example.lyrics.SyllableWordModel
 import com.example.ui.theme.JetBrainsMonoFontFamily
 import com.example.ui.theme.LocalGlassTheme
 import com.example.ui.theme.MonoSilver
 import com.example.viewmodel.PlayerSettingsState
+import kotlinx.coroutines.delay
+import kotlin.math.roundToInt
 
 /**
- * Full-Screen & Side-by-Side Synced `.ttml` Lyrics Stage matching the reference layout:
- * - Preserves full-color Album Art and blurred background aura even in Ultra Monochrome Mode.
- * - Renders Main lyrics (left, full size), Background lyrics (smaller sub-line below main line),
- *   and Duo / Secondary vocalist lyrics (right-aligned).
- * - Guarantees NotSung words have ZERO premature letter highlight (only lighting up when Active/Sung).
- * - Applies custom uploaded Lyrics FontFamily if configured.
+ * Full-Screen & Side-by-Side Synced Lyrics Stage:
+ * - Supports ALL 4 lyrics modes:
+ *   1. Syllable Sync (`.ttml` / Spicy Lyrics `Syllable`)
+ *   2. Word Sync (`Word` / Enhanced LRC)
+ *   3. Line Sync (`.lrc` / Spicy Lyrics `Line`)
+ *   4. Plain Text (`.txt` / Unsynced static lyrics)
+ * - Eliminates line-switch jitter by using smooth `animateScrollBy` viewport centering and
+ *   hardware-accelerated `graphicsLayer` transforms (zero conditional `Modifier.blur` node recreation).
+ * - Smooth word-to-word glow transitions using a single persistent `Text` composable per word.
+ * - Restores full Lyrics Background Controls (Blur Radius, Protective Black Tint, Orb Speed, Word Glow)
+ *   in the Lyrics Settings Pop-Out Sheet.
  */
 @Composable
 fun LyricsStageView(
@@ -105,6 +136,8 @@ fun LyricsStageView(
     playbackSpeed: Float,
     playbackPitch: Float,
     coLocatedTtmlFileName: String?,
+    attribution: LyricsAttributionInfo?,
+    isFetchingSpicyLyrics: Boolean,
     settings: PlayerSettingsState,
     onCollapse: () -> Unit,
     onToggleTheatreMode: (Boolean) -> Unit,
@@ -114,7 +147,11 @@ fun LyricsStageView(
     onSkipNext: () -> Unit = {},
     onOpenSpeedPitchSheet: () -> Unit,
     onOpenGlassCustomizer: () -> Unit,
+    onOpenFullSettings: () -> Unit = {},
+    onOpenSpicySearchModal: () -> Unit = {},
     onAdjustTrackOffset: (Int) -> Unit,
+    onUpdateSettings: ((PlayerSettingsState) -> PlayerSettingsState) -> Unit = {},
+    onClearCurrentTrackLyricsCache: () -> Unit = {},
     onLoadManualTtmlClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -122,114 +159,164 @@ fun LyricsStageView(
     val lyricsFontFamily = glass.effectiveLyricsFontFamily
     val listState = rememberLazyListState()
     val isTheatre = settings.theatreFullscreenMode
+    val isPlainTextMode = remember(lines) { lines.isNotEmpty() && lines.all { it.isPlainTextUnsynced } }
 
-    LaunchedEffect(activeLineIndex, settings.autoScrollLyrics) {
-        if (settings.autoScrollLyrics && activeLineIndex in lines.indices) {
-            listState.animateScrollToItem(
-                index = activeLineIndex,
-                scrollOffset = -200
-            )
+    // Controls are hidden by default; revealed only on screen tap or finger drag
+    var controlsVisible by remember { mutableStateOf(false) }
+    var interactionNonce by remember { mutableIntStateOf(0) }
+    var isLyricsPopoutSettingsOpen by remember { mutableStateOf(false) }
+
+    LaunchedEffect(listState.isScrollInProgress) {
+        if (listState.isScrollInProgress) {
+            controlsVisible = true
+            interactionNonce++
+        }
+    }
+
+    LaunchedEffect(controlsVisible, interactionNonce, listState.isScrollInProgress) {
+        if (controlsVisible && !listState.isScrollInProgress && !isLyricsPopoutSettingsOpen) {
+            delay(3800)
+            controlsVisible = false
+        }
+    }
+
+    // Jitter-free smooth scroll centering when activeLineIndex advances!
+    LaunchedEffect(activeLineIndex, settings.autoScrollLyrics, isPlainTextMode) {
+        if (!isPlainTextMode && settings.autoScrollLyrics && activeLineIndex in lines.indices && !listState.isScrollInProgress) {
+            val layoutInfo = listState.layoutInfo
+            val targetItem = layoutInfo.visibleItemsInfo.firstOrNull { it.index == activeLineIndex }
+            val viewportHeight = (layoutInfo.viewportEndOffset - layoutInfo.viewportStartOffset).coerceAtLeast(1)
+            val desiredAnchorPx = (viewportHeight * 0.30f).toInt()
+
+            if (targetItem != null) {
+                val itemCenter = targetItem.offset + (targetItem.size / 2)
+                val deltaPx = (itemCenter - desiredAnchorPx).toFloat()
+                if (kotlin.math.abs(deltaPx) > 6f) {
+                    listState.animateScrollBy(
+                        value = deltaPx,
+                        animationSpec = tween(durationMillis = 420, easing = FastOutSlowInEasing)
+                    )
+                }
+            } else {
+                listState.animateScrollToItem(
+                    index = activeLineIndex,
+                    scrollOffset = -desiredAnchorPx
+                )
+            }
         }
     }
 
     BoxWithConstraints(
         modifier = modifier
             .fillMaxSize()
+            .pointerInput(Unit) {
+                awaitPointerEventScope {
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                        if (event.changes.any { it.pressed }) {
+                            controlsVisible = true
+                            interactionNonce++
+                        }
+                    }
+                }
+            }
             .padding(horizontal = 16.dp, vertical = 8.dp)
             .testTag("lyrics_stage_view")
     ) {
         val isLandscapeOrWide = maxWidth >= 600.dp
 
         Column(modifier = Modifier.fillMaxSize()) {
-            // Subtle Top Control Row
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 6.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+            AnimatedVisibility(
+                visible = controlsVisible,
+                enter = fadeIn(tween(180)),
+                exit = fadeOut(tween(260))
             ) {
-                IconButton(
-                    onClick = onCollapse,
+                Row(
                     modifier = Modifier
-                        .size(44.dp)
-                        .testTag("collapse_lyrics_button")
+                        .fillMaxWidth()
+                        .padding(bottom = 6.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.KeyboardArrowDown,
-                        contentDescription = "Collapse Lyrics View",
-                        tint = Color.White
-                    )
-                }
-
-                if (!isTheatre) {
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                    IconButton(
+                        onClick = onCollapse,
+                        modifier = Modifier
+                            .size(44.dp)
+                            .clip(CircleShape)
+                            .background(Color.Black.copy(alpha = 0.52f))
+                            .testTag("collapse_lyrics_button")
                     ) {
-                        val effectiveOffset = settings.globalLyricsOffsetMs + (track?.lyricsOffsetMs ?: 0)
-                        MiniPillButton(
-                            text = "-100ms",
-                            onClick = { onAdjustTrackOffset(-100) },
-                            tag = "lyrics_offset_minus_button"
-                        )
-                        Text(
-                            text = "${if (effectiveOffset >= 0) "+" else ""}${effectiveOffset}ms",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = Color.White.copy(alpha = 0.8f)
-                        )
-                        MiniPillButton(
-                            text = "+100ms",
-                            onClick = { onAdjustTrackOffset(100) },
-                            tag = "lyrics_offset_plus_button"
-                        )
-                        MiniPillButton(
-                            text = "${MusicAudioEngine.formatMultiplier(playbackSpeed)} / ${MusicAudioEngine.formatMultiplier(playbackPitch)}",
-                            onClick = onOpenSpeedPitchSheet,
-                            tag = "lyrics_open_speed_pitch_button"
-                        )
-                        MiniPillButton(
-                            text = ".ttml",
-                            onClick = onLoadManualTtmlClick,
-                            tag = "lyrics_header_load_ttml_button"
+                        Icon(
+                            imageVector = Icons.Default.KeyboardArrowDown,
+                            contentDescription = "Collapse Lyrics View",
+                            tint = Color.White
                         )
                     }
-                }
 
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (!isTheatre) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (!coLocatedTtmlFileName.isNullOrBlank()) {
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(50))
+                                    .background(Color.Black.copy(alpha = 0.50f))
+                                    .border(1.dp, Color.White.copy(alpha = 0.20f), RoundedCornerShape(50))
+                                    .padding(horizontal = 10.dp, vertical = 5.dp)
+                            ) {
+                                Text(
+                                    text = coLocatedTtmlFileName,
+                                    fontFamily = JetBrainsMonoFontFamily,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White.copy(alpha = 0.90f),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+
+                        MiniPillButton(
+                            text = "Search Lyrics",
+                            onClick = onOpenSpicySearchModal,
+                            tag = "lyrics_open_spicy_search_button"
+                        )
+
                         IconButton(
-                            onClick = onOpenGlassCustomizer,
+                            onClick = { isLyricsPopoutSettingsOpen = true },
                             modifier = Modifier
-                                .size(44.dp)
-                                .testTag("lyrics_glass_customizer_button")
+                                .size(42.dp)
+                                .clip(CircleShape)
+                                .background(Color.Black.copy(alpha = 0.52f))
+                                .testTag("lyrics_exclusive_settings_button")
                         ) {
                             Icon(
-                                imageVector = Icons.Default.Tune,
-                                contentDescription = "Customize Blur & Glass",
+                                imageVector = Icons.Default.Settings,
+                                contentDescription = "Open Lyrics & Background Settings",
                                 tint = Color.White
                             )
                         }
-                    }
-                    IconButton(
-                        onClick = { onToggleTheatreMode(!isTheatre) },
-                        modifier = Modifier
-                            .size(44.dp)
-                            .testTag("toggle_theatre_mode_button")
-                    ) {
-                        Icon(
-                            imageVector = if (isTheatre) Icons.Default.CloseFullscreen else Icons.Default.Fullscreen,
-                            contentDescription = "Toggle Theatre Mode",
-                            tint = Color.White
-                        )
+
+                        IconButton(
+                            onClick = { onToggleTheatreMode(!isTheatre) },
+                            modifier = Modifier
+                                .size(42.dp)
+                                .clip(CircleShape)
+                                .background(Color.Black.copy(alpha = 0.52f))
+                                .testTag("toggle_theatre_mode_button")
+                        ) {
+                            Icon(
+                                imageVector = if (isTheatre) Icons.Default.CloseFullscreen else Icons.Default.Fullscreen,
+                                contentDescription = "Toggle Theatre Mode",
+                                tint = Color.White
+                            )
+                        }
                     }
                 }
             }
 
             if (isLandscapeOrWide) {
-                // TWO-COLUMN REFERENCE SCREENSHOT LAYOUT:
-                // Left: Full-Color Album Art + Slim Progress Bar (0:50 --- 2:48) + Bold Title + Artist
-                // Right: Multi-Vocalist Scrolling Lyrics (Main, Smaller Background, Right-Side Duo)
                 Row(
                     modifier = Modifier
                         .weight(1f)
@@ -242,6 +329,7 @@ fun LyricsStageView(
                         currentPositionMs = currentPositionMs,
                         durationMs = durationMs,
                         isPlaying = isPlaying,
+                        controlsVisible = controlsVisible,
                         onSeekToMs = onSeekToMs,
                         onTogglePlayPause = onTogglePlayPause,
                         onSkipPrevious = onSkipPrevious,
@@ -259,18 +347,18 @@ fun LyricsStageView(
                         currentPositionMs = currentPositionMs,
                         baseFontSizeSp = settings.lyricsFontSizeSp,
                         lyricsFontFamily = lyricsFontFamily,
+                        attribution = attribution,
+                        isFetchingSpicyLyrics = isFetchingSpicyLyrics,
                         listState = listState,
                         onSeekToMs = onSeekToMs,
                         onLoadManualTtmlClick = onLoadManualTtmlClick,
+                        onOpenSpicySearchModal = onOpenSpicySearchModal,
                         modifier = Modifier
                             .weight(0.58f)
                             .fillMaxHeight()
                     )
                 }
             } else {
-                // PORTRAIT LAYOUT:
-                // Top: Crisp Full-Color Album Art + Progress Bar + Centered Title & Artist
-                // Bottom: Multi-Vocalist Scrolling Lyrics
                 Column(
                     modifier = Modifier
                         .weight(1f)
@@ -281,6 +369,7 @@ fun LyricsStageView(
                         currentPositionMs = currentPositionMs,
                         durationMs = durationMs,
                         isPlaying = isPlaying,
+                        controlsVisible = controlsVisible,
                         onSeekToMs = onSeekToMs,
                         onTogglePlayPause = onTogglePlayPause,
                         onSkipPrevious = onSkipPrevious,
@@ -289,7 +378,7 @@ fun LyricsStageView(
                         modifier = Modifier.fillMaxWidth()
                     )
 
-                    Spacer(modifier = Modifier.height(8.dp))
+                    Spacer(modifier = Modifier.height(6.dp))
 
                     LyricsScrollViewport(
                         track = track,
@@ -298,9 +387,12 @@ fun LyricsStageView(
                         currentPositionMs = currentPositionMs,
                         baseFontSizeSp = settings.lyricsFontSizeSp,
                         lyricsFontFamily = lyricsFontFamily,
+                        attribution = attribution,
+                        isFetchingSpicyLyrics = isFetchingSpicyLyrics,
                         listState = listState,
                         onSeekToMs = onSeekToMs,
                         onLoadManualTtmlClick = onLoadManualTtmlClick,
+                        onOpenSpicySearchModal = onOpenSpicySearchModal,
                         modifier = Modifier
                             .weight(1f)
                             .fillMaxWidth()
@@ -308,19 +400,308 @@ fun LyricsStageView(
                 }
             }
         }
+
+        // Exclusive Pop-Out Settings Sheet when the user taps the Settings button on the Lyrics screen
+        if (isLyricsPopoutSettingsOpen) {
+            LyricsQuickSettingsPopoutSheet(
+                track = track,
+                playbackSpeed = playbackSpeed,
+                playbackPitch = playbackPitch,
+                settings = settings,
+                coLocatedTtmlFileName = coLocatedTtmlFileName,
+                onAdjustTrackOffset = onAdjustTrackOffset,
+                onUpdateSettings = onUpdateSettings,
+                onClearCurrentTrackLyricsCache = {
+                    onClearCurrentTrackLyricsCache()
+                    isLyricsPopoutSettingsOpen = false
+                },
+                onOpenSpeedPitchSheet = {
+                    isLyricsPopoutSettingsOpen = false
+                    onOpenSpeedPitchSheet()
+                },
+                onLoadManualTtmlClick = {
+                    isLyricsPopoutSettingsOpen = false
+                    onLoadManualTtmlClick()
+                },
+                onOpenSpicySearchModal = {
+                    isLyricsPopoutSettingsOpen = false
+                    onOpenSpicySearchModal()
+                },
+                onOpenFullSettings = {
+                    isLyricsPopoutSettingsOpen = false
+                    onOpenFullSettings()
+                },
+                onDismiss = { isLyricsPopoutSettingsOpen = false }
+            )
+        }
     }
 }
 
-/**
- * Renders the Album Art, slim pill scrubber (`0:50 ─── 2:48`), bold centered track title,
- * and artist name matching the uploaded reference image (`round and round` / `bbno$`).
- */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun LyricsQuickSettingsPopoutSheet(
+    track: TrackEntity?,
+    playbackSpeed: Float,
+    playbackPitch: Float,
+    settings: PlayerSettingsState,
+    coLocatedTtmlFileName: String?,
+    onAdjustTrackOffset: (Int) -> Unit,
+    onUpdateSettings: ((PlayerSettingsState) -> PlayerSettingsState) -> Unit,
+    onClearCurrentTrackLyricsCache: () -> Unit,
+    onOpenSpeedPitchSheet: () -> Unit,
+    onLoadManualTtmlClick: () -> Unit,
+    onOpenSpicySearchModal: () -> Unit,
+    onOpenFullSettings: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val effectiveOffset = settings.globalLyricsOffsetMs + (track?.lyricsOffsetMs ?: 0)
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = Color.Transparent,
+        scrimColor = Color.Black.copy(alpha = 0.82f),
+        dragHandle = null
+    ) {
+        FrostedGlassSurface(
+            shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+            elevated = true,
+            accentHighlight = true,
+            opaqueModal = true,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 6.dp)
+                .testTag("lyrics_popout_settings_sheet")
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "LYRICS & BACKGROUND SETTINGS",
+                            style = MaterialTheme.typography.titleLarge,
+                            color = Color.White
+                        )
+                        Text(
+                            text = coLocatedTtmlFileName ?: "Syllable • Word • Line (LRC) • Plain Text Engine",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MonoSilver
+                        )
+                    }
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Default.Close, contentDescription = "Close", tint = Color.White)
+                    }
+                }
+
+                // 1. LYRICS SCREEN BACKGROUND BLUR, BLACK TINT & ORB CONTROLS
+                FrostedGlassSurface(
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = "Background Blur Radius: ${settings.glassBlurRadiusDp.roundToInt()}dp",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = Color.White
+                        )
+                        Slider(
+                            value = settings.glassBlurRadiusDp,
+                            onValueChange = { v -> onUpdateSettings { it.copy(glassBlurRadiusDp = v) } },
+                            valueRange = 0f..120f,
+                            colors = SliderDefaults.colors(
+                                thumbColor = Color.White,
+                                activeTrackColor = Color.White,
+                                inactiveTrackColor = Color.White.copy(alpha = 0.24f)
+                            ),
+                            modifier = Modifier.testTag("lyrics_blur_radius_slider")
+                        )
+
+                        Text(
+                            text = "Protective Black Tint on Blur: ${(settings.lyricsBlackTintAlpha * 100).roundToInt()}% (Keeps white lyrics readable on white covers)",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = Color.White
+                        )
+                        Slider(
+                            value = settings.lyricsBlackTintAlpha,
+                            onValueChange = { v -> onUpdateSettings { it.copy(lyricsBlackTintAlpha = v) } },
+                            valueRange = 0.15f..0.80f,
+                            colors = SliderDefaults.colors(
+                                thumbColor = Color.White,
+                                activeTrackColor = Color.White,
+                                inactiveTrackColor = Color.White.copy(alpha = 0.24f)
+                            ),
+                            modifier = Modifier.testTag("lyrics_black_tint_slider")
+                        )
+
+                        Text(
+                            text = "Background 9-Orb Speed: ${String.format(java.util.Locale.US, "%.1fx", settings.bgAnimationSpeed)}",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = Color.White
+                        )
+                        Slider(
+                            value = settings.bgAnimationSpeed,
+                            onValueChange = { v -> onUpdateSettings { it.copy(bgAnimationSpeed = v) } },
+                            valueRange = 0f..3.0f,
+                            colors = SliderDefaults.colors(
+                                thumbColor = Color.White,
+                                activeTrackColor = Color.White,
+                                inactiveTrackColor = Color.White.copy(alpha = 0.24f)
+                            ),
+                            modifier = Modifier.testTag("lyrics_orb_speed_slider")
+                        )
+
+                        Text(
+                            text = "Word Glow Intensity: ${String.format(java.util.Locale.US, "%.1fx", settings.lyricsGlowIntensity)}",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = Color.White
+                        )
+                        Slider(
+                            value = settings.lyricsGlowIntensity,
+                            onValueChange = { v -> onUpdateSettings { it.copy(lyricsGlowIntensity = v) } },
+                            valueRange = 0f..2.0f,
+                            colors = SliderDefaults.colors(
+                                thumbColor = Color.White,
+                                activeTrackColor = Color.White,
+                                inactiveTrackColor = Color.White.copy(alpha = 0.24f)
+                            ),
+                            modifier = Modifier.testTag("lyrics_glow_intensity_slider")
+                        )
+
+                        Text(
+                            text = "Lyrics Font Size: ${settings.lyricsFontSizeSp.roundToInt()}sp",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = Color.White
+                        )
+                        Slider(
+                            value = settings.lyricsFontSizeSp,
+                            onValueChange = { v -> onUpdateSettings { it.copy(lyricsFontSizeSp = v) } },
+                            valueRange = 16f..42f,
+                            colors = SliderDefaults.colors(
+                                thumbColor = Color.White,
+                                activeTrackColor = Color.White,
+                                inactiveTrackColor = Color.White.copy(alpha = 0.24f)
+                            )
+                        )
+                    }
+                }
+
+                // 2. Track Timing Offset
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Sync Offset: ${if (effectiveOffset >= 0) "+" else ""}${effectiveOffset}ms",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = Color.White
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        MiniPillButton("-100ms", { onAdjustTrackOffset(-100) }, "lyrics_offset_minus_button")
+                        MiniPillButton("+100ms", { onAdjustTrackOffset(100) }, "lyrics_offset_plus_button")
+                    }
+                }
+
+                // 3. Speed & Pitch Quick Access
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Speed & Pitch (0.1x–5.0x)",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = Color.White
+                    )
+                    MiniPillButton(
+                        text = "${MusicAudioEngine.formatMultiplier(playbackSpeed)} / ${MusicAudioEngine.formatMultiplier(playbackPitch)}",
+                        onClick = onOpenSpeedPitchSheet,
+                        tag = "lyrics_open_speed_pitch_button"
+                    )
+                }
+
+                // 4. Actions Row: Search Spicy Lyrics, Load Local (.ttml / .lrc / .txt)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(
+                        onClick = onOpenSpicySearchModal,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primary,
+                            contentColor = MaterialTheme.colorScheme.onPrimary
+                        ),
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("popout_search_spicy_lyrics_button")
+                    ) {
+                        Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Search Lyrics")
+                    }
+
+                    OutlinedButton(
+                        onClick = onLoadManualTtmlClick,
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("lyrics_header_load_ttml_button")
+                    ) {
+                        Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Load File")
+                    }
+                }
+
+                // 5. Clear Current Song Lyrics Cache button
+                OutlinedButton(
+                    onClick = onClearCurrentTrackLyricsCache,
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("popout_clear_current_song_lyrics_cache_button")
+                ) {
+                    Icon(Icons.Default.DeleteSweep, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Clear Current Song Lyrics Cache")
+                }
+
+                OutlinedButton(
+                    onClick = onOpenFullSettings,
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("popout_open_full_settings_button")
+                ) {
+                    Icon(Icons.Default.Settings, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("All App Settings, Themes & Secret Key")
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun ArtworkAndScrubberColumn(
     track: TrackEntity?,
     currentPositionMs: Double,
     durationMs: Long,
     isPlaying: Boolean,
+    controlsVisible: Boolean,
     onSeekToMs: (Long) -> Unit,
     onTogglePlayPause: () -> Unit,
     onSkipPrevious: () -> Unit,
@@ -333,7 +714,7 @@ private fun ArtworkAndScrubberColumn(
         verticalArrangement = Arrangement.Center,
         modifier = modifier
     ) {
-        val artSize = if (compactForPortrait) 156.dp else 260.dp
+        val artSize = if (compactForPortrait) 148.dp else 256.dp
 
         CrispAlbumArtCover(
             title = track?.album ?: "No Track",
@@ -347,15 +728,14 @@ private fun ArtworkAndScrubberColumn(
             coverArtPath = track?.coverArtPath,
             sizeDp = artSize,
             cornerRadiusDp = 16.dp,
-            forceFullColor = true, // Always full color on Lyrics Screen even in Ultra Monochrome mode
+            forceFullColor = true,
             modifier = Modifier
                 .size(artSize)
                 .clickable { onTogglePlayPause() }
         )
 
-        Spacer(modifier = Modifier.height(14.dp))
+        Spacer(modifier = Modifier.height(12.dp))
 
-        // Slim pill progress bar with timestamps on left & right (`0:50 [====------] 2:48`)
         val progress = (currentPositionMs.toFloat() / durationMs.toFloat().coerceAtLeast(1f)).coerceIn(0f, 1f)
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -368,8 +748,9 @@ private fun ArtworkAndScrubberColumn(
             Text(
                 text = formatDurationMs(currentPositionMs.toLong()),
                 fontFamily = JetBrainsMonoFontFamily,
+                fontWeight = FontWeight.Bold,
                 fontSize = 11.sp,
-                color = Color.White.copy(alpha = 0.78f)
+                color = Color.White.copy(alpha = 0.82f)
             )
 
             var barWidthPx by remember { mutableFloatStateOf(1f) }
@@ -378,7 +759,7 @@ private fun ArtworkAndScrubberColumn(
                     .weight(1f)
                     .height(8.dp)
                     .clip(RoundedCornerShape(50))
-                    .background(Color.White.copy(alpha = 0.22f))
+                    .background(Color.White.copy(alpha = 0.24f))
                     .onSizeChanged { barWidthPx = it.width.toFloat().coerceAtLeast(1f) }
                     .pointerInput(durationMs) {
                         detectTapGestures { offset ->
@@ -399,17 +780,18 @@ private fun ArtworkAndScrubberColumn(
             Text(
                 text = formatDurationMs(durationMs),
                 fontFamily = JetBrainsMonoFontFamily,
+                fontWeight = FontWeight.Bold,
                 fontSize = 11.sp,
-                color = Color.White.copy(alpha = 0.78f)
+                color = Color.White.copy(alpha = 0.82f)
             )
         }
 
-        Spacer(modifier = Modifier.height(10.dp))
+        Spacer(modifier = Modifier.height(8.dp))
 
         Text(
             text = track?.title ?: "Select a Track",
             style = MaterialTheme.typography.headlineMedium.copy(
-                fontWeight = FontWeight.Bold,
+                fontWeight = FontWeight.ExtraBold,
                 fontSize = if (compactForPortrait) 20.sp else 24.sp
             ),
             color = Color.White,
@@ -422,18 +804,22 @@ private fun ArtworkAndScrubberColumn(
 
         Text(
             text = track?.artist ?: "Connect a local folder to begin",
-            style = MaterialTheme.typography.bodyMedium,
-            color = Color.White.copy(alpha = 0.68f),
+            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+            color = Color.White.copy(alpha = 0.76f),
             textAlign = TextAlign.Center,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
         )
 
-        if (!compactForPortrait) {
-            Spacer(modifier = Modifier.height(12.dp))
+        AnimatedVisibility(
+            visible = controlsVisible,
+            enter = fadeIn(tween(180)),
+            exit = fadeOut(tween(240))
+        ) {
             Row(
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalAlignment = Alignment.CenterVertically
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.padding(top = 6.dp)
             ) {
                 IconButton(onClick = onSkipPrevious) {
                     Icon(Icons.Default.SkipPrevious, contentDescription = "Previous", tint = Color.White)
@@ -465,9 +851,12 @@ private fun LyricsScrollViewport(
     currentPositionMs: Double,
     baseFontSizeSp: Float,
     lyricsFontFamily: FontFamily,
+    attribution: LyricsAttributionInfo?,
+    isFetchingSpicyLyrics: Boolean,
     listState: androidx.compose.foundation.lazy.LazyListState,
     onSeekToMs: (Long) -> Unit,
     onLoadManualTtmlClick: () -> Unit,
+    onOpenSpicySearchModal: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Box(
@@ -475,12 +864,11 @@ private fun LyricsScrollViewport(
             .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
             .drawWithContent {
                 drawContent()
-                // Smooth top & bottom alpha mask like the reference screenshot
                 drawRect(
                     brush = Brush.verticalGradient(
                         0.0f to Color.Transparent,
-                        0.08f to Color.Black,
-                        0.90f to Color.Black,
+                        0.06f to Color.Black,
+                        0.92f to Color.Black,
                         1.0f to Color.Transparent
                     ),
                     blendMode = BlendMode.DstIn
@@ -490,14 +878,16 @@ private fun LyricsScrollViewport(
         if (lines.isEmpty()) {
             EmptyTtmlFallbackState(
                 track = track,
-                onLoadManualTtmlClick = onLoadManualTtmlClick
+                isFetchingSpicyLyrics = isFetchingSpicyLyrics,
+                onLoadManualTtmlClick = onLoadManualTtmlClick,
+                onOpenSpicySearchModal = onOpenSpicySearchModal
             )
         } else {
-            val frameKey = (currentPositionMs / 16.0).toLong()
+            val frameTick = (currentPositionMs / 16.0).toLong()
             LazyColumn(
                 state = listState,
-                contentPadding = PaddingValues(top = 56.dp, bottom = 140.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
+                contentPadding = PaddingValues(top = 64.dp, bottom = 160.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
                 modifier = Modifier
                     .fillMaxSize()
                     .testTag("lyrics_lazy_column")
@@ -506,15 +896,30 @@ private fun LyricsScrollViewport(
                     items = lines,
                     key = { idx, line -> "${line.index}_${idx}" }
                 ) { index, line ->
-                    @Suppress("UNUSED_VARIABLE")
-                    val tick = frameKey
+                    val isNearActive = line.isPlainTextUnsynced || kotlin.math.abs(index - activeLineIndex) <= 2
+                    val lineTick = if (isNearActive) frameTick else 0L
 
                     SyllableLineRow(
                         line = line,
-                        isActiveLine = index == activeLineIndex || line.state == ElementVocalState.Active,
+                        isActiveLine = line.isPlainTextUnsynced || index == activeLineIndex || line.state == ElementVocalState.Active,
+                        distanceFromActive = if (line.isPlainTextUnsynced || activeLineIndex < 0) 0 else kotlin.math.abs(index - activeLineIndex),
+                        frameTick = lineTick,
                         baseFontSizeSp = baseFontSizeSp,
                         lyricsFontFamily = lyricsFontFamily,
-                        onLineClick = { onSeekToMs(line.startTimeMs.toLong()) }
+                        onLineClick = {
+                            if (!line.isPlainTextUnsynced) {
+                                onSeekToMs(line.startTimeMs.toLong())
+                            }
+                        }
+                    )
+                }
+
+                item(key = "lyrics_attribution_footer") {
+                    LyricsAttributionFooter(
+                        attribution = attribution,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 18.dp, bottom = 24.dp, start = 4.dp, end = 16.dp)
                     )
                 }
             }
@@ -522,48 +927,214 @@ private fun LyricsScrollViewport(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun LyricsAttributionFooter(
+    attribution: LyricsAttributionInfo?,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    val writers = attribution?.songWriters.orEmpty()
+    val maker = attribution?.maker
+    val uploader = attribution?.uploader
+    val source = attribution?.source.orEmpty().lowercase()
+
+    Column(
+        modifier = modifier.testTag("lyrics_attribution_footer"),
+        verticalArrangement = Arrangement.spacedBy(5.dp)
+    ) {
+        if (writers.isNotEmpty()) {
+            Text(
+                text = "Written by ${writers.joinToString(", ")}",
+                style = MaterialTheme.typography.bodySmall.copy(
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 12.sp,
+                    lineHeight = 16.sp
+                ),
+                color = Color.White.copy(alpha = 0.66f)
+            )
+        }
+
+        if (maker != null || uploader != null || source == "spicy_lyrics") {
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                verticalArrangement = Arrangement.Center
+            ) {
+                Text(
+                    text = "Community lyrics",
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 11.sp
+                    ),
+                    color = Color.White.copy(alpha = 0.54f),
+                    modifier = Modifier.align(Alignment.CenterVertically)
+                )
+
+                val primaryContributor = maker ?: uploader
+                if (primaryContributor != null) {
+                    val roleLabel = if (maker != null) "· Made by" else "· Uploaded by"
+                    Text(
+                        text = roleLabel,
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 11.sp
+                        ),
+                        color = Color.White.copy(alpha = 0.54f),
+                        modifier = Modifier.align(Alignment.CenterVertically)
+                    )
+
+                    ContributorBadgeInline(
+                        username = primaryContributor.username,
+                        avatarUrl = primaryContributor.avatarUrl,
+                        profileUrl = primaryContributor.profileUrl,
+                        onOpenUrl = { url ->
+                            try {
+                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                            } catch (_: Exception) {
+                            }
+                        },
+                        modifier = Modifier.align(Alignment.CenterVertically)
+                    )
+                }
+
+                if (maker != null && uploader != null && !uploader.username.equals(maker.username, ignoreCase = true)) {
+                    Text(
+                        text = "· Uploaded by",
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 11.sp
+                        ),
+                        color = Color.White.copy(alpha = 0.54f),
+                        modifier = Modifier.align(Alignment.CenterVertically)
+                    )
+
+                    ContributorBadgeInline(
+                        username = uploader.username,
+                        avatarUrl = uploader.avatarUrl,
+                        profileUrl = uploader.profileUrl,
+                        onOpenUrl = { url ->
+                            try {
+                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                            } catch (_: Exception) {
+                            }
+                        },
+                        modifier = Modifier.align(Alignment.CenterVertically)
+                    )
+                }
+            }
+        } else {
+            val providerText = when {
+                source.contains("spotify") -> "Provided by Spotify"
+                source.contains("lrc") -> "Synced LRC Lyrics"
+                source.contains("txt") || source.contains("plain") -> "Plain Text Lyrics"
+                else -> "Provided by Apple Music"
+            }
+            Text(
+                text = providerText,
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 11.sp
+                ),
+                color = Color.White.copy(alpha = 0.54f)
+            )
+        }
+    }
+}
+
+@Composable
+private fun ContributorBadgeInline(
+    username: String,
+    avatarUrl: String?,
+    profileUrl: String?,
+    onOpenUrl: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        modifier = modifier
+            .clip(RoundedCornerShape(50))
+            .clickable(enabled = !profileUrl.isNullOrBlank()) {
+                if (!profileUrl.isNullOrBlank()) onOpenUrl(profileUrl)
+            }
+    ) {
+        RemoteUrlImage(
+            imageUrl = avatarUrl,
+            contentDescription = "$username avatar",
+            modifier = Modifier
+                .size(15.dp)
+                .clip(CircleShape)
+                .background(Color.White.copy(alpha = 0.18f))
+                .border(0.5.dp, Color.White.copy(alpha = 0.35f), CircleShape)
+        ) {
+            Icon(
+                imageVector = Icons.Default.Person,
+                contentDescription = null,
+                tint = Color.White.copy(alpha = 0.75f),
+                modifier = Modifier.size(11.dp)
+            )
+        }
+
+        Text(
+            text = "@$username",
+            style = MaterialTheme.typography.labelSmall.copy(
+                fontWeight = FontWeight.Bold,
+                fontSize = 11.sp,
+                textDecoration = TextDecoration.Underline
+            ),
+            color = Color.White.copy(alpha = 0.70f)
+        )
+    }
+}
+
 /**
- * Renders one line of `.ttml` synced lyrics supporting:
- * - **Main Lyrics** (`!line.isBgLine && !line.isDuoLine`): Large bold text on the left.
- * - **Smaller Background Lyrics** (`line.isBgLine`): Smaller font (`0.68x` size) tucked right underneath the main vocal line.
- * - **Right-Aligned Duo Lyrics** (`line.isDuoLine`): Aligned/indented to the right side of the viewport.
+ * Jitter-Free Line Row:
+ * - Uses ONLY `Modifier.graphicsLayer` for opacity and subtle scale (never attaches/detaches `Modifier.blur()`
+ *   on line transitions, completely eliminating RenderNode recreation hitches!).
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun SyllableLineRow(
     line: SyllableLineModel,
     isActiveLine: Boolean,
+    distanceFromActive: Int,
+    frameTick: Long,
     baseFontSizeSp: Float,
     lyricsFontFamily: FontFamily,
     onLineClick: () -> Unit
 ) {
+    @Suppress("UNUSED_VARIABLE")
+    val tick = frameTick
+
     val density = LocalDensity.current
-    val fontSizeSp = if (line.isBgLine) (baseFontSizeSp * 0.66f) else baseFontSizeSp
+    val fontSizeSp = if (line.isBgLine) (baseFontSizeSp * 0.68f) else baseFontSizeSp
     val lineFontPx = with(density) { fontSizeSp.sp.toPx() }
 
+    val targetLineAlpha = when {
+        line.isPlainTextUnsynced -> 0.94f
+        line.preHidden -> 0f
+        isActiveLine -> 1f
+        distanceFromActive == 1 -> 0.56f
+        distanceFromActive == 2 -> 0.42f
+        else -> 0.32f
+    }
+
     val lineAlpha by animateFloatAsState(
-        targetValue = when {
-            line.preHidden -> 0f
-            line.state == ElementVocalState.Active -> 1f
-            line.state == ElementVocalState.Sung && line.sungAfterActive -> 0.65f
-            line.state == ElementVocalState.Sung -> 0.42f
-            else -> 0.45f
-        },
-        animationSpec = tween(220),
+        targetValue = targetLineAlpha,
+        animationSpec = tween(durationMillis = 260, easing = FastOutSlowInEasing),
         label = "lineAlpha"
     )
 
-    val blurDp = with(density) { line.blurAmountPx.toDp() }
-    val blurMod = if (!isActiveLine && blurDp > 0.6.dp) {
-        Modifier.blur(radius = blurDp.coerceAtMost(6.dp), edgeTreatment = BlurredEdgeTreatment.Unbounded)
-    } else {
-        Modifier
-    }
+    val lineScale by animateFloatAsState(
+        targetValue = if (isActiveLine && !line.isPlainTextUnsynced && !line.isBgLine) 1.0f else 0.975f,
+        animationSpec = spring(dampingRatio = 0.82f, stiffness = 380f),
+        label = "lineScale"
+    )
 
     val startPad = if (line.isDuoLine) 48.dp else 4.dp
-    val endPad = if (line.isDuoLine) 4.dp else 32.dp
+    val endPad = if (line.isDuoLine) 4.dp else 28.dp
     val topPad = if (line.isBgLine) 0.dp else 6.dp
-    val bottomPad = if (line.isBgLine) 6.dp else 2.dp
+    val bottomPad = if (line.isBgLine) 6.dp else 4.dp
 
     val horizontalArrangement = if (line.isDuoLine) {
         Arrangement.spacedBy(8.dp, Alignment.End)
@@ -575,11 +1146,15 @@ private fun SyllableLineRow(
         contentAlignment = if (line.isDuoLine) Alignment.CenterEnd else Alignment.CenterStart,
         modifier = Modifier
             .fillMaxWidth()
+            .graphicsLayer {
+                alpha = lineAlpha
+                scaleX = lineScale
+                scaleY = lineScale
+                transformOrigin = TransformOrigin(if (line.isDuoLine) 1f else 0f, 0.5f)
+            }
             .clip(RoundedCornerShape(12.dp))
-            .clickable(onClick = onLineClick)
+            .clickable(enabled = !line.isPlainTextUnsynced, onClick = onLineClick)
             .padding(start = startPad, end = endPad, top = topPad, bottom = bottomPad)
-            .alpha(lineAlpha)
-            .then(blurMod)
     ) {
         if (line.isDotLine) {
             Row(
@@ -610,6 +1185,42 @@ private fun SyllableLineRow(
                     )
                 }
             }
+        } else if (line.isLineSyncedOnly || line.isPlainTextUnsynced) {
+            // Line-Synced (LRC) or Plain Text (Unsynced): Render the whole line as a single smooth phrase!
+            val fullLineText = remember(line.words) { line.words.joinToString(" ") { it.text } }
+            val isLit = line.isPlainTextUnsynced || isActiveLine || line.state == ElementVocalState.Active
+            val textAlpha by animateFloatAsState(
+                targetValue = if (isLit) 1.0f else 0.48f,
+                animationSpec = tween(220),
+                label = "lrcLineTextAlpha"
+            )
+            val glowAlpha by animateFloatAsState(
+                targetValue = if (isActiveLine && !line.isPlainTextUnsynced) {
+                    (line.words.firstOrNull()?.currentGlowOpacity ?: 0.28f)
+                } else 0f,
+                animationSpec = tween(240),
+                label = "lrcGlowAlpha"
+            )
+
+            Text(
+                text = fullLineText,
+                fontFamily = lyricsFontFamily,
+                fontWeight = if (line.isBgLine) FontWeight.Bold else FontWeight.ExtraBold,
+                fontSize = fontSizeSp.sp,
+                lineHeight = (fontSizeSp * 1.24f).sp,
+                textAlign = if (line.isDuoLine) TextAlign.End else TextAlign.Start,
+                color = Color.White.copy(alpha = textAlpha),
+                style = TextStyle(
+                    shadow = if (glowAlpha > 0.01f) {
+                        Shadow(
+                            color = Color.White.copy(alpha = glowAlpha),
+                            offset = Offset.Zero,
+                            blurRadius = 12f
+                        )
+                    } else null
+                ),
+                modifier = Modifier.fillMaxWidth()
+            )
         } else {
             FlowRow(
                 horizontalArrangement = horizontalArrangement,
@@ -631,10 +1242,11 @@ private fun SyllableLineRow(
 }
 
 /**
- * Renders an individual word or split-letter group with strict vocal state gating:
- * - `ElementVocalState.NotSung`: 100% uniform dim resting color (`0.42f` alpha). ZERO white letters!
- * - `ElementVocalState.Sung`: 100% solid lit white (`1.0f` alpha) during active line, or soft resting sung alpha.
- * - `ElementVocalState.Active`: Smooth horizontal sweep across the word's true measured pixel width!
+ * Single-Text Smooth Word & Syllable Renderer:
+ * - Always renders ONE persistent `Text` composable (never branching between multiple `Text` calls)
+ *   so `MultiParagraph` layout cache is never invalidated when words change state!
+ * - Smoothly interpolates `fillFraction` and `glowOpacity` so the highlight and glow glide
+ *   seamlessly from word to word without lag or snapping!
  */
 @Composable
 private fun SyllableWordView(
@@ -644,135 +1256,118 @@ private fun SyllableWordView(
     isBgLine: Boolean,
     lyricsFontFamily: FontFamily
 ) {
-    val dimAlpha = if (isBgLine) 0.36f else 0.42f
-    val litAlpha = if (isBgLine) 0.88f else 1.0f
-    val fontWeight = if (isBgLine) FontWeight.SemiBold else FontWeight.Bold
+    val dimAlpha = if (isBgLine) 0.38f else 0.42f
+    val litAlpha = if (isBgLine) 0.92f else 1.0f
+    val fontWeight = if (isBgLine) FontWeight.Bold else FontWeight.ExtraBold
 
-    if (word.letterGroup && word.letters.isNotEmpty()) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.graphicsLayer {
-                scaleX = word.currentScale
-                scaleY = word.currentScale
-                translationY = word.currentYOffsetEm * lineFontPx
-            }
-        ) {
-            for (letter in word.letters) {
-                val letterAlpha = when (letter.state) {
-                    ElementVocalState.NotSung -> dimAlpha
-                    ElementVocalState.Sung -> litAlpha
-                    ElementVocalState.Active -> {
-                        val f = letter.fillFraction.coerceIn(0f, 1f)
-                        dimAlpha + (litAlpha - dimAlpha) * f
+    var measuredWidthPx by remember { mutableFloatStateOf(0f) }
+
+    val targetFill = when (word.state) {
+        ElementVocalState.NotSung -> 0f
+        ElementVocalState.Sung -> 1f
+        ElementVocalState.Active -> {
+            if (word.letterGroup && word.letters.isNotEmpty()) {
+                val totalLetters = word.letters.size.toFloat().coerceAtLeast(1f)
+                var litCount = 0f
+                for (letter in word.letters) {
+                    litCount += when (letter.state) {
+                        ElementVocalState.Sung -> 1f
+                        ElementVocalState.Active -> letter.fillFraction.coerceIn(0f, 1f)
+                        ElementVocalState.NotSung -> 0f
                     }
                 }
-                Text(
-                    text = letter.charText,
-                    fontFamily = lyricsFontFamily,
-                    fontWeight = fontWeight,
-                    fontSize = fontSizeSp.sp,
-                    color = Color.White.copy(alpha = letterAlpha),
-                    style = TextStyle(
-                        shadow = if (letter.state == ElementVocalState.Active && letter.currentGlowOpacity > 0.02f) {
-                            Shadow(
-                                color = Color.White.copy(alpha = letter.currentGlowOpacity.coerceIn(0f, 1f)),
-                                offset = Offset.Zero,
-                                blurRadius = letter.currentGlowRadiusPx.coerceAtLeast(1f)
-                            )
-                        } else null
-                    ),
-                    modifier = Modifier.graphicsLayer {
-                        scaleX = letter.currentScale
-                        scaleY = letter.currentScale
-                        translationX = letter.currentTranslateXEm * lineFontPx
-                        translationY = letter.currentTranslateYEm * lineFontPx
-                    }
-                )
+                (litCount / totalLetters).coerceIn(0f, 1f)
+            } else {
+                word.fillFraction.coerceIn(0f, 1f)
             }
         }
-    } else {
-        var measuredWidthPx by remember { mutableFloatStateOf(0f) }
-        val fill = word.fillFraction.coerceIn(0f, 1f)
-
-        // Strict gating: when NotSung (fill <= 0.005f), render solid uniform dim color so
-        // the first 1.5 letters are NEVER visible before it's this word's turn!
-        if (word.state == ElementVocalState.NotSung || fill <= 0.005f) {
-            Text(
-                text = word.text,
-                fontFamily = lyricsFontFamily,
-                fontWeight = fontWeight,
-                fontSize = fontSizeSp.sp,
-                color = Color.White.copy(alpha = dimAlpha),
-                modifier = Modifier
-                    .onSizeChanged { measuredWidthPx = it.width.toFloat() }
-                    .graphicsLayer {
-                        scaleX = word.currentScale
-                        scaleY = word.currentScale
-                        translationY = word.currentYOffsetEm * lineFontPx
-                    }
-            )
-        } else if (word.state == ElementVocalState.Sung || fill >= 0.995f) {
-            Text(
-                text = word.text,
-                fontFamily = lyricsFontFamily,
-                fontWeight = fontWeight,
-                fontSize = fontSizeSp.sp,
-                color = Color.White.copy(alpha = litAlpha),
-                modifier = Modifier
-                    .onSizeChanged { measuredWidthPx = it.width.toFloat() }
-                    .graphicsLayer {
-                        scaleX = word.currentScale
-                        scaleY = word.currentScale
-                        translationY = word.currentYOffsetEm * lineFontPx
-                    }
-            )
-        } else {
-            // Active state: sweep across actual measured width from 0% to 100%
-            val widthPx = if (measuredWidthPx > 4f) measuredWidthPx else (word.text.length * lineFontPx * 0.58f).coerceAtLeast(20f)
-            val softBand = 0.08f
-            val stopLit = (fill - softBand).coerceIn(0f, 0.98f)
-            val stopDim = (fill + softBand).coerceIn(stopLit + 0.01f, 1f)
-
-            val sweepBrush = Brush.horizontalGradient(
-                0.0f to Color.White.copy(alpha = litAlpha),
-                stopLit to Color.White.copy(alpha = litAlpha),
-                stopDim to Color.White.copy(alpha = dimAlpha),
-                1.0f to Color.White.copy(alpha = dimAlpha),
-                startX = 0f,
-                endX = widthPx
-            )
-
-            Text(
-                text = word.text,
-                fontFamily = lyricsFontFamily,
-                fontWeight = fontWeight,
-                fontSize = fontSizeSp.sp,
-                style = TextStyle(
-                    brush = sweepBrush,
-                    shadow = if (word.currentGlowOpacity > 0.02f) {
-                        Shadow(
-                            color = Color.White.copy(alpha = word.currentGlowOpacity.coerceIn(0f, 1f)),
-                            offset = Offset.Zero,
-                            blurRadius = word.currentGlowRadiusPx.coerceAtLeast(1f)
-                        )
-                    } else null
-                ),
-                modifier = Modifier
-                    .onSizeChanged { measuredWidthPx = it.width.toFloat() }
-                    .graphicsLayer {
-                        scaleX = word.currentScale
-                        scaleY = word.currentScale
-                        translationY = word.currentYOffsetEm * lineFontPx
-                    }
-            )
-        }
     }
+
+    val rawGlowOpacity = if (word.letterGroup && word.letters.isNotEmpty()) {
+        maxOf(word.currentGlowOpacity, word.letters.maxOfOrNull { it.currentGlowOpacity } ?: 0f)
+    } else {
+        word.currentGlowOpacity
+    }
+    val rawGlowRadius = if (word.letterGroup && word.letters.isNotEmpty()) {
+        maxOf(word.currentGlowRadiusPx, word.letters.maxOfOrNull { it.currentGlowRadiusPx } ?: 6f)
+    } else {
+        word.currentGlowRadiusPx
+    }
+
+    // Smooth glow interpolation so word-to-word glow transitions never snap!
+    val smoothGlowAlpha by animateFloatAsState(
+        targetValue = rawGlowOpacity.coerceIn(0f, 0.85f),
+        animationSpec = tween(durationMillis = 110, easing = FastOutSlowInEasing),
+        label = "wordGlowAlpha"
+    )
+
+    val smoothScale = word.currentScale.coerceIn(0.985f, 1.045f)
+    val smoothTranslateY = (word.currentYOffsetEm * lineFontPx).coerceIn(-5f, 3f)
+
+    val widthPx = if (measuredWidthPx > 4f) {
+        measuredWidthPx
+    } else {
+        (word.text.length * lineFontPx * 0.58f).coerceAtLeast(24f)
+    }
+
+    val sweepBrush = if (targetFill <= 0.004f) {
+        Brush.horizontalGradient(
+            colors = listOf(Color.White.copy(alpha = dimAlpha), Color.White.copy(alpha = dimAlpha)),
+            startX = 0f,
+            endX = widthPx
+        )
+    } else if (targetFill >= 0.996f) {
+        Brush.horizontalGradient(
+            colors = listOf(Color.White.copy(alpha = litAlpha), Color.White.copy(alpha = litAlpha)),
+            startX = 0f,
+            endX = widthPx
+        )
+    } else {
+        val softEdge = 0.08f
+        val stopLit = (targetFill - softEdge).coerceIn(0f, 0.98f)
+        val stopDim = (targetFill + softEdge).coerceIn(stopLit + 0.01f, 1f)
+        Brush.horizontalGradient(
+            0.0f to Color.White.copy(alpha = litAlpha),
+            stopLit to Color.White.copy(alpha = litAlpha),
+            stopDim to Color.White.copy(alpha = dimAlpha),
+            1.0f to Color.White.copy(alpha = dimAlpha),
+            startX = 0f,
+            endX = widthPx
+        )
+    }
+
+    Text(
+        text = word.text,
+        fontFamily = lyricsFontFamily,
+        fontWeight = fontWeight,
+        fontSize = fontSizeSp.sp,
+        style = TextStyle(
+            brush = sweepBrush,
+            shadow = if (smoothGlowAlpha > 0.015f) {
+                Shadow(
+                    color = Color.White.copy(alpha = smoothGlowAlpha),
+                    offset = Offset.Zero,
+                    blurRadius = rawGlowRadius.coerceIn(2f, 16f)
+                )
+            } else null
+        ),
+        modifier = Modifier
+            .onSizeChanged { measuredWidthPx = it.width.toFloat() }
+            .graphicsLayer {
+                transformOrigin = TransformOrigin(0.5f, 0.5f)
+                scaleX = smoothScale
+                scaleY = smoothScale
+                translationY = smoothTranslateY
+            }
+    )
 }
 
 @Composable
 private fun EmptyTtmlFallbackState(
     track: TrackEntity?,
-    onLoadManualTtmlClick: () -> Unit
+    isFetchingSpicyLyrics: Boolean,
+    onLoadManualTtmlClick: () -> Unit,
+    onOpenSpicySearchModal: () -> Unit
 ) {
     Box(
         modifier = Modifier
@@ -783,44 +1378,85 @@ private fun EmptyTtmlFallbackState(
         FrostedGlassSurface(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(24.dp),
-            elevated = true
+            elevated = true,
+            opaqueModal = true
         ) {
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
-                modifier = Modifier.padding(28.dp)
+                modifier = Modifier.padding(24.dp)
             ) {
-                Text(
-                    text = "NO CO-LOCATED .TTML LYRICS FOUND",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = Color.White
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(
-                    text = if (track != null) {
-                        "Place ${track.baseFileName}.ttml in ${track.folderPath} or load a .ttml file manually below."
-                    } else {
-                        "Import a track with a matching .ttml file in the same folder, or load a .ttml file below."
-                    },
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MonoSilver,
-                    textAlign = TextAlign.Center
-                )
-                Spacer(modifier = Modifier.height(20.dp))
-                Button(
-                    onClick = onLoadManualTtmlClick,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = Color.White,
-                        contentColor = Color.Black
-                    ),
-                    modifier = Modifier.testTag("empty_load_ttml_button")
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.FolderOpen,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp)
+                if (isFetchingSpicyLyrics) {
+                    CircularProgressIndicator(
+                        color = Color.White,
+                        strokeWidth = 3.dp,
+                        modifier = Modifier.size(34.dp)
                     )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Load .ttml File")
+                    Spacer(modifier = Modifier.height(14.dp))
+                    Text(
+                        text = "FETCHING SPICY LYRICS AUTOMATICALLY...",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = Color.White
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "Matching \"${track?.title ?: ""}\" by ${track?.artist ?: ""} (Syllable > Word > LRC > Plain Text)",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MonoSilver,
+                        textAlign = TextAlign.Center
+                    )
+                } else {
+                    Text(
+                        text = "NO LYRICS FOUND YET",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = Color.White
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = if (track != null) {
+                            "Auto-lookup by Title & Artist did not find lyrics for \"${track.title}\". Search Spicy Lyrics below or load a local .ttml, .lrc, or .txt file."
+                        } else {
+                            "Select a song to automatically fetch lyrics or load a .ttml / .lrc / .txt file."
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MonoSilver,
+                        textAlign = TextAlign.Center
+                    )
+                    Spacer(modifier = Modifier.height(18.dp))
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Button(
+                            onClick = onOpenSpicySearchModal,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color.White,
+                                contentColor = Color.Black
+                            ),
+                            modifier = Modifier.testTag("empty_search_spicy_lyrics_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Search,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Search Spicy Lyrics")
+                        }
+
+                        OutlinedButton(
+                            onClick = onLoadManualTtmlClick,
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                            modifier = Modifier.testTag("empty_load_ttml_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.FolderOpen,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Load .ttml/.lrc/.txt")
+                        }
+                    }
                 }
             }
         }
@@ -836,6 +1472,7 @@ fun MiniPillButton(
 ) {
     FrostedGlassSurface(
         shape = RoundedCornerShape(50),
+        elevated = true,
         modifier = modifier
             .clickable(onClick = onClick)
             .testTag(tag)
@@ -844,7 +1481,7 @@ fun MiniPillButton(
             text = text,
             fontFamily = JetBrainsMonoFontFamily,
             fontSize = 11.sp,
-            fontWeight = FontWeight.Medium,
+            fontWeight = FontWeight.Bold,
             color = Color.White,
             modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
         )

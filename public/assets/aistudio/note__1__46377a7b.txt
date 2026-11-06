@@ -1,0 +1,113 @@
+# Finding tracks
+
+> Ask for lyrics with a Spotify id, an ISRC or an Apple Music id. If you only have a title, search first.
+
+## Ids you can ask with [#ids-you-can-ask-with]
+
+`GET /v1/lyrics/{id}` takes any of these, and works out which one you sent:
+
+| Kind                 | Example                  |
+| -------------------- | ------------------------ |
+| Spotify track id     | `4PTG3Z6ehGkBFwjybzWkR8` |
+| ISRC                 | `GBARL9300135`           |
+| Apple Music track id | `1438556832`             |
+
+`id` in the response is always the Spotify id. `ids` holds the track's id on each
+service we can link it to:
+
+```jsonc
+"ids": {
+	"spotify": "4PTG3Z6ehGkBFwjybzWkR8",
+	"isrc": "GBARL9300135",
+	"apple_music": "1438556832",
+	"tidal": "491206012",
+	"youtube": "7FwDP17XPlk"
+}
+```
+
+Only `spotify` is always there. A missing key means we do not know that id right
+now, so it can appear on a later request.
+
+<Callout>
+  Use the Spotify id when you have it. An ISRC or Apple Music id links to one
+  release of a recording, and a community sync belongs to one release, so those
+  ids can miss a community sync that the Spotify id would find.
+</Callout>
+
+An ISRC or Apple Music id we cannot link answers `404` with `track_not_found`. A
+`503` means it could not be looked up right now: wait for `Retry-After` and ask
+again.
+
+## Search [#search]
+
+```bash
+curl "https://api.spicylyrics.org/v1/tracks/search?title=Never%20Gonna%20Give%20You%20Up&artist=Rick%20Astley&duration=213.573" \
+  -H "Authorization: Bearer $SPICY_LYRICS_SECRET_KEY"
+```
+
+Send `title` when you have the fields separately, with `artist`, `album` and
+`duration` if you know them. Otherwise send free text as `q`.
+
+```jsonc
+{
+	"Body": {
+		"results": [
+			{
+				"id": "4cOdK2wGLETKBW3PvgPWqT",
+				"ids": {
+					"spotify": "4cOdK2wGLETKBW3PvgPWqT",
+					"isrc": "GBARL9300135",
+					"apple_music": "1438556832",
+					"tidal": "491206012",
+					"youtube": "7FwDP17XPlk"
+				},
+				"title": "Never Gonna Give You Up",
+				"artists": ["Rick Astley"],
+				"album": "Whenever You Need Somebody",
+				"duration": 213.573,
+				"explicit": false,
+				"artwork": "https://image-cdn-ak.spotifycdn.com/image/ab67616d0000b273baf89eb11ec7c657805d2da0",
+				"tier": "exact",
+				"variants": [
+					{
+						"id": "4PTG3Z6ehGkBFwjybzWkR8",
+						"album": "Whenever You Need Somebody",
+						"duration": 213.573
+					}
+				]
+			}
+		]
+	},
+	"Status": 200,
+	"Type": "object"
+}
+```
+
+Pass a result's `id` to `GET /v1/lyrics/{id}`. `variants` lists other releases
+of the same recording. All the parameters are in the
+[reference](/docs/reference/search.tracks).
+
+Search does not say whether a track has lyrics. Each search counts as one
+request against your limit.
+
+## Match tiers [#match-tiers]
+
+Every result has a `tier`, best first:
+
+| Tier           | Means                                                                  |
+| -------------- | ---------------------------------------------------------------------- |
+| `exact`        | The title and artist match, and it is not a different version.         |
+| `likely`       | The title matches, but something could not be confirmed.               |
+| `version`      | The same song in another version: live, remix, acoustic, another cut.  |
+| `other_artist` | The same title by someone else, such as a cover.                       |
+| `related`      | Only part of the title or the artist matches.                          |
+
+If your code picks a result on its own, only take the first one when its tier is
+one you trust, usually `exact`. A different version of a song has different
+timings. Send `duration` whenever you know it, since it is what tells versions
+apart.
+
+## In the playground [#in-the-playground]
+
+The signed-out playground only serves a few demo tracks. Sign in and choose an
+application to search or to ask with an ISRC or Apple Music id.

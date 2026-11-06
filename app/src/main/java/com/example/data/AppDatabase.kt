@@ -28,8 +28,17 @@ interface MusicDao {
     @Update
     suspend fun updateTrack(track: TrackEntity)
 
-    @Query("UPDATE tracks SET manualTtmlContent = :ttmlContent WHERE id = :trackId")
-    suspend fun updateManualTtml(trackId: String, ttmlContent: String)
+    @Query("UPDATE tracks SET manualTtmlContent = :ttmlContent, lyricsAttributionJson = :attributionJson WHERE id = :trackId")
+    suspend fun updateManualTtml(trackId: String, ttmlContent: String, attributionJson: String?)
+
+    @Query("UPDATE tracks SET spicyLyricsJson = :spicyJson, lyricsAttributionJson = :attributionJson WHERE id = :trackId")
+    suspend fun updateSpicyLyrics(trackId: String, spicyJson: String, attributionJson: String?)
+
+    @Query("UPDATE tracks SET spicyLyricsJson = NULL, manualTtmlContent = NULL, embeddedTtmlContent = NULL, lyricsAttributionJson = NULL WHERE id = :trackId")
+    suspend fun clearTrackLyricsCache(trackId: String)
+
+    @Query("UPDATE tracks SET spicyLyricsJson = NULL, manualTtmlContent = NULL, embeddedTtmlContent = NULL, lyricsAttributionJson = NULL")
+    suspend fun clearAllLyricsCache()
 
     @Query("UPDATE tracks SET lyricsOffsetMs = :offsetMs WHERE id = :trackId")
     suspend fun updateTrackLyricsOffset(trackId: String, offsetMs: Int)
@@ -61,7 +70,7 @@ interface MusicDao {
 
 @Database(
     entities = [TrackEntity::class, PlaylistEntity::class],
-    version = 1,
+    version = 3,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {

@@ -47,6 +47,7 @@ import com.example.ui.components.LyricsStageView
 import com.example.ui.components.QueueDrawerSheet
 import com.example.ui.components.SettingsModalSheet
 import com.example.ui.components.SpeedAndPitchModalSheet
+import com.example.ui.components.SpicyLyricsSearchModalSheet
 import com.example.ui.components.TopStudioBar
 import com.example.ui.theme.CustomFontManager
 import com.example.ui.theme.GlassThemeConfig
@@ -62,13 +63,19 @@ class MainActivity : ComponentActivity() {
             val playerViewModel: MusicPlayerViewModel = viewModel()
             val state by playerViewModel.uiState.collectAsStateWithLifecycle()
 
-            val activePalette = state.currentTrack?.parsePalette() ?: listOf(
-                Color(0xFFD97706),
-                Color(0xFFDC2626),
-                Color(0xFF2563EB),
-                Color(0xFF7C3AED),
-                Color(0xFF1E1B4B)
-            )
+            val activePalette = remember(state.currentTrack?.id, state.currentTrack?.coverColorsCsv) {
+                state.currentTrack?.parsePalette() ?: listOf(
+                    Color(0xFFD97706),
+                    Color(0xFFDC2626),
+                    Color(0xFF2563EB),
+                    Color(0xFF7C3AED),
+                    Color(0xFFF59E0B),
+                    Color(0xFF10B981),
+                    Color(0xFFEF4444),
+                    Color(0xFF3B82F6),
+                    Color(0xFF1E1B4B)
+                )
+            }
 
             val customUiFontFamily = remember(state.settings.customUiFontPath) {
                 CustomFontManager.loadFontFamilyFromFile(state.settings.customUiFontPath)
@@ -79,11 +86,18 @@ class MainActivity : ComponentActivity() {
 
             val glassConfig = GlassThemeConfig(
                 themeMode = state.settings.themeMode,
+                bleedAlbumArtIntoSongList = state.settings.bleedAlbumArtIntoSongList,
                 blurRadiusDp = state.settings.glassBlurRadiusDp,
                 frostOpacity = state.settings.glassFrostOpacity,
                 specularIntensity = state.settings.glassSpecularIntensity,
                 animationSpeed = state.settings.bgAnimationSpeed,
+                materialYouAccentBoost = state.settings.materialYouAccentBoost,
+                materialYouSurfaceRichness = state.settings.materialYouSurfaceRichness,
                 oledPitchBlack = state.settings.oledPitchBlack,
+                monoBorderContrast = state.settings.monoBorderContrast,
+                monoKeepLyricsColored = state.settings.monoKeepLyricsColored,
+                lyricsBlackTintAlpha = state.settings.lyricsBlackTintAlpha,
+                lyricsOrbSaturation = state.settings.lyricsOrbSaturation,
                 theatreMode = state.settings.theatreFullscreenMode,
                 isLyricsScreenActive = state.isLyricsExpanded,
                 customUiFontFamily = customUiFontFamily,
@@ -105,6 +119,20 @@ fun MonolithMusicApp(
     viewModel: MusicPlayerViewModel
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+
+    // Memoize library collections so playback progress updates never re-sort or re-allocate track lists
+    val memoizedFilteredTracks = remember(state.allTracks, state.searchQuery, state.sortOption) {
+        state.filteredAndSortedTracks
+    }
+    val memoizedAlbums = remember(state.allTracks) {
+        state.albums
+    }
+    val memoizedFolders = remember(state.allTracks) {
+        state.folders
+    }
+    val memoizedArtists = remember(state.allTracks) {
+        state.artists
+    }
 
     LaunchedEffect(Unit) {
         while (true) {
@@ -185,14 +213,14 @@ fun MonolithMusicApp(
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val isWideTablet = maxWidth >= 760.dp
 
-        // LAYER 0: Dynamic Animated Album Art & Palette Fluid Canvas with Real-Time Blur Slider
+        // LAYER 0: Single Universal 9-Orb Album Art Background Canvas + Protective Black Tint on Lyrics Blur
         AnimatedAlbumArtBackdrop(
             isPlaying = state.isPlaying,
             playbackSpeed = state.playbackSpeed,
             modifier = Modifier.fillMaxSize()
         )
 
-        // LAYER 1 & 2: Main Content & Synced TTML Lyrics Stage
+        // LAYER 1 & 2: Main Content & Synced Lyrics Stage
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -209,6 +237,8 @@ fun MonolithMusicApp(
                     playbackSpeed = state.playbackSpeed,
                     playbackPitch = state.playbackPitch,
                     coLocatedTtmlFileName = state.coLocatedTtmlFileName,
+                    attribution = state.lyricsAttribution,
+                    isFetchingSpicyLyrics = state.isFetchingSpicyLyrics,
                     settings = state.settings,
                     onCollapse = { viewModel.setLyricsExpanded(false) },
                     onToggleTheatreMode = { viewModel.setTheatreFullscreenMode(it) },
@@ -218,8 +248,12 @@ fun MonolithMusicApp(
                     onSkipNext = { viewModel.skipToNext() },
                     onOpenSpeedPitchSheet = { viewModel.setSpeedPitchSheetOpen(true) },
                     onOpenGlassCustomizer = { viewModel.setGlassCustomizerOpen(true) },
+                    onOpenFullSettings = { viewModel.setSettingsOpen(true) },
+                    onOpenSpicySearchModal = { viewModel.setSpicySearchModalOpen(true) },
                     onAdjustTrackOffset = { viewModel.adjustCurrentTrackLyricsOffset(it) },
                     onLoadManualTtmlClick = { manualTtmlLauncher.launch(arrayOf("*/*")) },
+                    onUpdateSettings = { viewModel.updateSettings(it) },
+                    onClearCurrentTrackLyricsCache = { viewModel.clearCurrentTrackLyricsCache() },
                     modifier = Modifier.fillMaxSize()
                 )
             } else {
@@ -229,8 +263,10 @@ fun MonolithMusicApp(
                     sortOption = state.sortOption,
                     onSearchQueryChange = { viewModel.setSearchQuery(it) },
                     onSortOptionChange = { viewModel.setSortOption(it) },
+                    onRescanClick = { viewModel.rescanLibrary() },
                     onConnectFolderClick = { folderPickerLauncher.launch(null) },
                     onImportFilesClick = { multipleFilesLauncher.launch(arrayOf("*/*")) },
+                    onOpenSpicySearchClick = { viewModel.setSpicySearchModalOpen(true) },
                     onOpenGlassCustomizer = { viewModel.setGlassCustomizerOpen(true) },
                     onOpenSettings = { viewModel.setSettingsOpen(true) }
                 )
@@ -248,14 +284,13 @@ fun MonolithMusicApp(
                         ) {
                             when (state.mainTab) {
                                 MainNavTab.ALL_SONGS -> {
-                                    val tracks = state.filteredAndSortedTracks
                                     AllSongsListView(
-                                        tracks = tracks,
+                                        tracks = memoizedFilteredTracks,
                                         currentPlayingTrackId = state.currentTrack?.id,
                                         playlists = state.playlists,
                                         contextLabel = "All Songs",
                                         onTrackClick = { clicked ->
-                                            viewModel.playSongFromContext(tracks, clicked, "All Songs")
+                                            viewModel.playSongFromContext(memoizedFilteredTracks, clicked, "All Songs")
                                         },
                                         onAddToQueueNext = { track ->
                                             viewModel.addToQueueNext(track)
@@ -267,16 +302,17 @@ fun MonolithMusicApp(
                                             viewModel.createPlaylist(name)
                                         },
                                         onConnectFolderClick = { folderPickerLauncher.launch(null) },
-                                        onImportFilesClick = { multipleFilesLauncher.launch(arrayOf("*/*")) }
+                                        onImportFilesClick = { multipleFilesLauncher.launch(arrayOf("*/*")) },
+                                        onRescanClick = { viewModel.rescanLibrary() }
                                     )
                                 }
 
                                 MainNavTab.CATEGORIES -> {
                                     CategoriesView(
                                         subTab = state.categorySubTab,
-                                        albums = state.albums,
-                                        folders = state.folders,
-                                        artists = state.artists,
+                                        albums = memoizedAlbums,
+                                        folders = memoizedFolders,
+                                        artists = memoizedArtists,
                                         playlists = state.playlists,
                                         allTracks = state.allTracks,
                                         currentPlayingTrackId = state.currentTrack?.id,
@@ -319,6 +355,8 @@ fun MonolithMusicApp(
                                     playbackSpeed = state.playbackSpeed,
                                     playbackPitch = state.playbackPitch,
                                     coLocatedTtmlFileName = state.coLocatedTtmlFileName,
+                                    attribution = state.lyricsAttribution,
+                                    isFetchingSpicyLyrics = state.isFetchingSpicyLyrics,
                                     settings = state.settings,
                                     onCollapse = { viewModel.setLyricsExpanded(true) },
                                     onToggleTheatreMode = { viewModel.setTheatreFullscreenMode(it) },
@@ -328,8 +366,12 @@ fun MonolithMusicApp(
                                     onSkipNext = { viewModel.skipToNext() },
                                     onOpenSpeedPitchSheet = { viewModel.setSpeedPitchSheetOpen(true) },
                                     onOpenGlassCustomizer = { viewModel.setGlassCustomizerOpen(true) },
+                                    onOpenFullSettings = { viewModel.setSettingsOpen(true) },
+                                    onOpenSpicySearchModal = { viewModel.setSpicySearchModalOpen(true) },
                                     onAdjustTrackOffset = { viewModel.adjustCurrentTrackLyricsOffset(it) },
-                                    onLoadManualTtmlClick = { manualTtmlLauncher.launch(arrayOf("*/*")) }
+                                    onLoadManualTtmlClick = { manualTtmlLauncher.launch(arrayOf("*/*")) },
+                                    onUpdateSettings = { viewModel.updateSettings(it) },
+                                    onClearCurrentTrackLyricsCache = { viewModel.clearCurrentTrackLyricsCache() }
                                 )
                             }
                         }
@@ -427,8 +469,12 @@ fun MonolithMusicApp(
                 settings = state.settings,
                 currentTrack = state.currentTrack,
                 totalTracksCount = state.allTracks.size,
-                totalFoldersCount = state.folders.size,
+                totalFoldersCount = memoizedFolders.size,
                 onUpdateSettings = { viewModel.updateSettings(it) },
+                onSaveSpicySecretKey = { viewModel.saveSpicySecretKey(it) },
+                onRevokeSpicySecretKey = { viewModel.revokeSpicySecretKey() },
+                onOpenSpicySearchModal = { viewModel.setSpicySearchModalOpen(true) },
+                onFetchDirectSpicyId = { viewModel.fetchSpicyLyricsByDirectId(it) },
                 onAdjustGlobalOffset = { viewModel.adjustGlobalLyricsOffset(it) },
                 onSetGlobalOffset = { viewModel.setGlobalLyricsOffset(it) },
                 onAdjustTrackOffset = { viewModel.adjustCurrentTrackLyricsOffset(it) },
@@ -436,10 +482,31 @@ fun MonolithMusicApp(
                 onResetUiFontClick = { viewModel.resetCustomUiFont() },
                 onUploadLyricsFontClick = { lyricsFontPickerLauncher.launch(arrayOf("*/*")) },
                 onResetLyricsFontClick = { viewModel.resetCustomLyricsFont() },
+                onClearCurrentTrackLyricsCache = { viewModel.clearCurrentTrackLyricsCache() },
+                onClearAllLyricsCache = { viewModel.clearAllLyricsCache() },
+                onRescanLibraryClick = { viewModel.rescanLibrary() },
                 onClearAllTracks = { viewModel.clearAllLibraryTracks() },
                 onExportPlaylistsJson = { viewModel.exportPlaylistsJson() },
                 onImportPlaylistsJson = { viewModel.importPlaylistsJson(it) },
                 onDismiss = { viewModel.setSettingsOpen(false) }
+            )
+        }
+
+        if (state.isSpicySearchModalOpen) {
+            SpicyLyricsSearchModalSheet(
+                currentTrack = state.currentTrack,
+                secretKey = state.settings.spicyLyricsSecretKey,
+                searchResults = state.spicySearchResults,
+                isSearching = state.isSpicySearching,
+                searchErrorMessage = state.spicySearchError,
+                onExecuteSearch = { title, artist, freeQuery ->
+                    viewModel.executeSpicySearch(title, artist, freeQuery)
+                },
+                onSelectSearchResult = { result ->
+                    viewModel.selectSpicySearchResult(result)
+                },
+                onOpenSettingsForKey = { viewModel.setSettingsOpen(true) },
+                onDismiss = { viewModel.setSpicySearchModalOpen(false) }
             )
         }
     }

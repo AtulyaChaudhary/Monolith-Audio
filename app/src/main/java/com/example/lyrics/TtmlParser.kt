@@ -6,20 +6,232 @@ import java.io.StringReader
 import kotlin.math.max
 
 /**
- * Parses W3C / Apple Music / Spicy Lyrics `.ttml` XML documents into `SyllableLineModel` objects:
- * - Main Vocal Lines (`ttm:agent="v1"` or default): Left-aligned, full size.
- * - Background Vocal Lines (`ttm:role="x-bg"` on `<p>` or nested `<span ttm:role="x-bg">`):
- *   Extracted into a dedicated smaller `isBgLine = true` sub-line directly beneath the lead line.
- * - Duo / Secondary Vocalist Lines (`ttm:agent="v2"`, `person2`, or any agent distinct from the
- *   primary vocalist): Marked `isDuoLine = true` for right-side alignment!
+ * Multi-format Lyrics Parser:
+ * 1. `.ttml` (W3C Timed Text Markup Language — Syllable, Word, or Line-timed with Main, Background `x-bg`, and Duo `v2` vocals).
+ * 2. `.lrc` (Standard `[mm:ss.xx]` Line-synced LRC & Enhanced `<mm:ss.xx>` Word-synced LRC).
+ * 3. `.txt` / Plain Text (Unsynced multi-line lyrics).
  */
 object TtmlParser {
 
+    private data class RawSpan(
+        val text: String,
+        val startMs: Double,
+        val endMs: Double,
+        val isBg: Boolean
+    )
+
+    private data class RawLine(
+        val startMs: Double,
+        val endMs: Double,
+        val spans: List<RawSpan>,
+        val isBg: Boolean,
+        val isDuo: Boolean,
+        val isLineSyncedOnly: Boolean = false
+    )
+
+    private val LRC_LINE_REGEX = Regex("""\[(\d{1,3}):(\d{1,2}(?:\.\d{1,3})?)]""")
+    private val LRC_WORD_TAG_REGEX = Regex("""<(\d{1,3}):(\d{1,2}(?:\.\d{1,3})?)>\s*([^<]+)""")
+    private val LRC_META_REGEX = Regex("""^\s*\[(ti|ar|al|au|by|length|offset|re|ve):.*]\s*$""", RegexOption.IGNORE_CASE)
+
+    /**
+     * Automatically detects whether `rawContent` is `.ttml` XML, `.lrc` (Line/Enhanced LRC),
+     * or Plain Text (`.txt`) and parses it into `List<SyllableLineModel>` + `LyricsSyncPriority`.
+     */
+    fun parseAnyLyricsFormat(
+        rawContent: String,
+        durationMs: Long = 180_000L
+    ): Pair<List<SyllableLineModel>, LyricsSyncPriority> {
+        val trimmed = rawContent.trim()
+        if (trimmed.isEmpty()) return emptyList<SyllableLineModel>() to LyricsSyncPriority.NO_SYNC
+
+        // 1. Check TTML XML
+        if (trimmed.startsWith("<") && (trimmed.contains("<tt", ignoreCase = true) || trimmed.contains("<p", ignoreCase = true))) {
+            val ttmlLines = parseTtml(trimmed)
+            if (ttmlLines.isNotEmpty()) {
+                val hasLetters = ttmlLines.any { l -> l.words.any { it.letterGroup } }
+                val isLineOnly = ttmlLines.all { it.isLineSyncedOnly }
+                val priority = when {
+                    isLineOnly -> LyricsSyncPriority.LINE
+                    hasLetters -> LyricsSyncPriority.SYLLABLE
+                    else -> LyricsSyncPriority.WORD
+                }
+                return ttmlLines to priority
+            }
+        }
+
+        // 2. Check LRC format (`[mm:ss.xx] ...`)
+        if (LRC_LINE_REGEX.containsMatchIn(trimmed)) {
+            val lrcResult = parseLrc(trimmed, durationMs)
+            if (lrcResult.first.isNotEmpty()) {
+                return lrcResult
+            }
+        }
+
+        // 3. Fallback: Plain Text (Unsynced multi-line lyrics)
+        val plainLines = parsePlainText(trimmed, durationMs)
+        return plainLines to LyricsSyncPriority.NO_SYNC
+    }
+
+    /**
+     * Parses standard `[mm:ss.xx]` Line-Synced LRC and Enhanced `<mm:ss.xx>` Word-Synced LRC.
+     */
+    fun parseLrc(
+        lrcContent: String,
+        trackDurationMs: Long = 180_000L
+    ): Pair<List<SyllableLineModel>, LyricsSyncPriority> {
+        data class TimedLrcEntry(
+            val startMs: Double,
+            val text: String
+        )
+
+        val entries = mutableListOf<TimedLrcEntry>()
+        var globalOffsetMs = 0.0
+        val offsetRegex = Regex("""^\s*\[offset:\s*([+-]?\d+)\s*]""", RegexOption.IGNORE_CASE)
+
+        for (rawLine in lrcContent.lines()) {
+            val line = rawLine.trim()
+            if (line.isEmpty()) continue
+            val offsetMatch = offsetRegex.find(line)
+            if (offsetMatch != null) {
+                globalOffsetMs = offsetMatch.groupValues[1].toDoubleOrNull() ?: 0.0
+                continue
+            }
+            if (LRC_META_REGEX.matches(line)) continue
+
+            val matches = LRC_LINE_REGEX.findAll(line).toList()
+            if (matches.isEmpty()) continue
+
+            val lyricBody = line.substring(matches.last().range.last + 1).trim()
+            for (m in matches) {
+                val mins = m.groupValues[1].toDoubleOrNull() ?: 0.0
+                val secs = m.groupValues[2].toDoubleOrNull() ?: 0.0
+                val timeMs = max(0.0, (mins * 60.0 + secs) * 1000.0 + globalOffsetMs)
+                entries.add(TimedLrcEntry(timeMs, lyricBody))
+            }
+        }
+
+        if (entries.isEmpty()) return emptyList<SyllableLineModel>() to LyricsSyncPriority.NO_SYNC
+        val sorted = entries.sortedBy { it.startMs }
+
+        val models = mutableListOf<SyllableLineModel>()
+        var lineIdx = 0
+        var hasWordTags = false
+
+        for (i in sorted.indices) {
+            val entry = sorted[i]
+            if (entry.text.isBlank()) continue
+            val nextStart = if (i + 1 < sorted.size) {
+                sorted[i + 1].startMs
+            } else {
+                max(entry.startMs + 4000.0, trackDurationMs.toDouble())
+            }
+            val endMs = max(entry.startMs + 300.0, nextStart)
+
+            val wordMatches = LRC_WORD_TAG_REGEX.findAll(entry.text).toList()
+            if (wordMatches.isNotEmpty()) {
+                hasWordTags = true
+                val words = wordMatches.mapIndexedNotNull { wIdx, wm ->
+                    val wMins = wm.groupValues[1].toDoubleOrNull() ?: 0.0
+                    val wSecs = wm.groupValues[2].toDoubleOrNull() ?: 0.0
+                    val wStart = max(0.0, (wMins * 60.0 + wSecs) * 1000.0 + globalOffsetMs)
+                    val wText = wm.groupValues[3].trim()
+                    if (wText.isEmpty()) return@mapIndexedNotNull null
+                    val wNext = if (wIdx + 1 < wordMatches.size) {
+                        val nm = wordMatches[wIdx + 1]
+                        val nMins = nm.groupValues[1].toDoubleOrNull() ?: 0.0
+                        val nSecs = nm.groupValues[2].toDoubleOrNull() ?: 0.0
+                        max(wStart + 50.0, (nMins * 60.0 + nSecs) * 1000.0 + globalOffsetMs)
+                    } else {
+                        max(wStart + 150.0, endMs)
+                    }
+                    SyllableWordModel(
+                        text = wText,
+                        startTimeMs = wStart,
+                        endTimeMs = wNext,
+                        isLastWordInLine = wIdx == wordMatches.lastIndex
+                    )
+                }
+                if (words.isNotEmpty()) {
+                    models.add(
+                        SyllableLineModel(
+                            index = lineIdx++,
+                            startTimeMs = entry.startMs,
+                            endTimeMs = endMs,
+                            words = words,
+                            isLineSyncedOnly = false
+                        )
+                    )
+                }
+            } else {
+                val tokens = entry.text.split(Regex("\\s+")).filter { it.isNotBlank() }
+                if (tokens.isNotEmpty()) {
+                    val words = tokens.mapIndexed { wIdx, token ->
+                        SyllableWordModel(
+                            text = token,
+                            startTimeMs = entry.startMs,
+                            endTimeMs = endMs,
+                            isLastWordInLine = wIdx == tokens.lastIndex
+                        )
+                    }
+                    models.add(
+                        SyllableLineModel(
+                            index = lineIdx++,
+                            startTimeMs = entry.startMs,
+                            endTimeMs = endMs,
+                            words = words,
+                            isLineSyncedOnly = true
+                        )
+                    )
+                }
+            }
+        }
+
+        val priority = if (hasWordTags) LyricsSyncPriority.WORD else LyricsSyncPriority.LINE
+        return models to priority
+    }
+
+    /**
+     * Parses plain unsynced text lyrics (`.txt` or static lyrics) into readable `SyllableLineModel` rows.
+     */
+    fun parsePlainText(
+        plainText: String,
+        trackDurationMs: Long = 180_000L
+    ): List<SyllableLineModel> {
+        val rawLines = plainText.lines()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() && !LRC_META_REGEX.matches(it) }
+        if (rawLines.isEmpty()) return emptyList()
+
+        val stepMs = max(2000.0, trackDurationMs.toDouble() / rawLines.size.coerceAtLeast(1))
+        return rawLines.mapIndexed { idx, lineText ->
+            val lStart = idx * stepMs
+            val lEnd = lStart + stepMs
+            val tokens = lineText.split(Regex("\\s+")).filter { it.isNotBlank() }
+            val words = tokens.mapIndexed { wIdx, token ->
+                SyllableWordModel(
+                    text = token,
+                    startTimeMs = lStart,
+                    endTimeMs = lEnd,
+                    isLastWordInLine = wIdx == tokens.lastIndex,
+                    state = ElementVocalState.Active,
+                    fillFraction = 1f
+                )
+            }
+            SyllableLineModel(
+                index = idx,
+                startTimeMs = lStart,
+                endTimeMs = lEnd,
+                words = words,
+                isLineSyncedOnly = true,
+                isPlainTextUnsynced = true,
+                state = ElementVocalState.Active
+            )
+        }
+    }
+
     fun parseTtml(ttmlContent: String): List<SyllableLineModel> {
         if (ttmlContent.isBlank()) return emptyList()
-
-        val rawLines = mutableListOf<ParsedRawLine>()
-        var primaryAgent: String? = null
+        val rawLines = mutableListOf<RawLine>()
 
         try {
             val factory = XmlPullParserFactory.newInstance()
@@ -28,144 +240,146 @@ object TtmlParser {
             parser.setInput(StringReader(ttmlContent))
 
             var eventType = parser.eventType
-            var currentLineBegin: Double? = null
-            var currentLineEnd: Double? = null
-            var currentLineIsBg = false
-            var currentLineAgent: String? = null
-            var currentSpans = mutableListOf<ParsedRawSpan>()
-            var paragraphTextBuffer = StringBuilder()
             var insideP = false
-            var insideSpan = false
-            var spanBegin: Double? = null
-            var spanEnd: Double? = null
-            var spanIsBg = false
-            var spanTextBuffer = StringBuilder()
+            var pStartMs = 0.0
+            var pEndMs = 0.0
+            var pIsBg = false
+            var pIsDuo = false
+            var primaryAgentId: String? = null
+            val currentSpans = mutableListOf<RawSpan>()
+            val bgInlineSpans = mutableListOf<RawSpan>()
+            var pDirectText = StringBuilder()
 
-            // Support nested <span ttm:role="x-bg"> containing inner word <span> tags
-            var spanDepth = 0
-            var bgContainerDepth = 0
+            var insideSpan = false
+            var spanStartMs = 0.0
+            var spanEndMs = 0.0
+            var spanIsBg = false
+            var spanText = StringBuilder()
 
             while (eventType != XmlPullParser.END_DOCUMENT) {
                 when (eventType) {
                     XmlPullParser.START_TAG -> {
                         val tag = parser.name.lowercase()
-                        if (tag == "p") {
+                        if (tag == "ttm:agent" || tag == "agent") {
+                            val id = getAttr(parser, "xml:id", "id")
+                            val type = getAttr(parser, "type")
+                            if (primaryAgentId == null && id != null && (type == null || type == "person" || type == "character")) {
+                                primaryAgentId = id
+                            }
+                        } else if (tag == "p") {
                             insideP = true
-                            currentLineBegin = parseTimeAttr(parser.getAttributeValue(null, "begin"))
-                            currentLineEnd = parseTimeAttr(parser.getAttributeValue(null, "end"))
-                            val role = getAttrAnyNs(parser, "role")
-                            currentLineIsBg = role?.contains("bg", ignoreCase = true) == true
-                            val agent = getAttrAnyNs(parser, "agent")?.trim()
-                            currentLineAgent = agent
-                            if (agent != null && primaryAgent == null && !currentLineIsBg) {
-                                primaryAgent = agent
-                            }
-                            currentSpans = mutableListOf()
-                            paragraphTextBuffer = StringBuilder()
-                            spanDepth = 0
-                            bgContainerDepth = 0
-                        } else if (tag == "span" && insideP) {
-                            spanDepth++
-                            val role = getAttrAnyNs(parser, "role")
-                            val isThisSpanBg = role?.contains("bg", ignoreCase = true) == true
-                            if (isThisSpanBg && bgContainerDepth == 0) {
-                                bgContainerDepth = spanDepth
-                            }
-                            val bAttr = parseTimeAttr(parser.getAttributeValue(null, "begin"))
-                            val eAttr = parseTimeAttr(parser.getAttributeValue(null, "end"))
-                            if (bAttr != null || eAttr != null || spanDepth == 1) {
+                            pStartMs = parseTimeAttr(getAttr(parser, "begin")) ?: 0.0
+                            pEndMs = parseTimeAttr(getAttr(parser, "end")) ?: (pStartMs + 3000.0)
+                            val role = getAttr(parser, "ttm:role", "role")
+                            val agent = getAttr(parser, "ttm:agent", "agent")
+                            val itunesBg = getAttr(parser, "itunes:bg")
+                            pIsBg = role?.contains("x-bg", ignoreCase = true) == true || itunesBg == "true"
+                            pIsDuo = isSecondaryVocalAgent(agent, primaryAgentId)
+                            currentSpans.clear()
+                            bgInlineSpans.clear()
+                            pDirectText = StringBuilder()
+                        } else if (insideP && tag == "span") {
+                            val role = getAttr(parser, "ttm:role", "role")
+                            val isRoleBg = role?.contains("x-bg", ignoreCase = true) == true
+                            val bAttr = parseTimeAttr(getAttr(parser, "begin"))
+                            val eAttr = parseTimeAttr(getAttr(parser, "end"))
+
+                            if (insideSpan && spanIsBg && bAttr != null && eAttr != null) {
+                                val prevTxt = spanText.toString().trim()
+                                if (prevTxt.isNotEmpty()) {
+                                    bgInlineSpans.add(RawSpan(prevTxt, spanStartMs, spanEndMs, true))
+                                }
+                                spanStartMs = bAttr
+                                spanEndMs = eAttr
+                                spanText = StringBuilder()
+                            } else {
                                 insideSpan = true
-                                spanBegin = bAttr ?: spanBegin
-                                spanEnd = eAttr ?: spanEnd
-                                spanIsBg = isThisSpanBg || bgContainerDepth > 0 || currentLineIsBg
-                                spanTextBuffer = StringBuilder()
+                                spanStartMs = bAttr ?: pStartMs
+                                spanEndMs = eAttr ?: pEndMs
+                                spanIsBg = pIsBg || isRoleBg
+                                spanText = StringBuilder()
                             }
                         }
                     }
+
                     XmlPullParser.TEXT -> {
-                        val text = parser.text ?: ""
+                        val txt = parser.text ?: ""
                         if (insideSpan) {
-                            spanTextBuffer.append(text)
+                            spanText.append(txt)
                         } else if (insideP) {
-                            paragraphTextBuffer.append(text)
+                            pDirectText.append(txt)
                         }
                     }
+
                     XmlPullParser.END_TAG -> {
                         val tag = parser.name.lowercase()
-                        if (tag == "span" && insideP) {
-                            if (insideSpan) {
-                                val rawText = spanTextBuffer.toString().trim()
-                                if (rawText.isNotEmpty() && spanBegin != null && spanEnd != null) {
-                                    currentSpans.add(
-                                        ParsedRawSpan(
-                                            text = rawText,
-                                            startMs = spanBegin!!,
-                                            endMs = max(spanBegin!! + 50.0, spanEnd!!),
-                                            isBg = spanIsBg
-                                        )
-                                    )
+                        if (tag == "span" && insideSpan) {
+                            val cleaned = spanText.toString().trim()
+                                .removePrefix("(")
+                                .removeSuffix(")")
+                                .trim()
+                            if (cleaned.isNotEmpty()) {
+                                val spanObj = RawSpan(
+                                    text = if (spanIsBg) spanText.toString().trim().removePrefix("(").removeSuffix(")").trim() else spanText.toString().trim(),
+                                    startMs = spanStartMs,
+                                    endMs = max(spanStartMs + 60.0, spanEndMs),
+                                    isBg = spanIsBg
+                                )
+                                if (spanIsBg && !pIsBg) {
+                                    bgInlineSpans.add(spanObj)
+                                } else {
+                                    currentSpans.add(spanObj)
                                 }
-                                spanTextBuffer = StringBuilder()
                             }
-                            if (spanDepth == bgContainerDepth) {
-                                bgContainerDepth = 0
-                            }
-                            spanDepth = (spanDepth - 1).coerceAtLeast(0)
-                            if (spanDepth == 0) {
-                                insideSpan = false
-                            }
+                            insideSpan = false
                         } else if (tag == "p" && insideP) {
-                            insideP = false
+                            var wasLineSyncedOnly = false
                             if (currentSpans.isEmpty()) {
-                                val fullLine = paragraphTextBuffer.toString().trim()
-                                val b = currentLineBegin ?: 0.0
-                                val e = currentLineEnd ?: (b + 3000.0)
-                                val words = fullLine.split(Regex("\\s+")).filter { it.isNotBlank() }
-                                if (words.isNotEmpty()) {
-                                    val step = max(120.0, (e - b) / words.size)
-                                    words.forEachIndexed { idx, w ->
-                                        val ws = b + idx * step
-                                        val we = if (idx == words.lastIndex) e else ws + step
-                                        currentSpans.add(ParsedRawSpan(w, ws, we, currentLineIsBg))
+                                val direct = pDirectText.toString().trim()
+                                if (direct.isNotEmpty()) {
+                                    wasLineSyncedOnly = true
+                                    val words = direct.split(Regex("\\s+")).filter { it.isNotBlank() }
+                                    words.forEach { w ->
+                                        currentSpans.add(
+                                            RawSpan(
+                                                text = w,
+                                                startMs = pStartMs,
+                                                endMs = pEndMs,
+                                                isBg = pIsBg
+                                            )
+                                        )
                                     }
                                 }
                             }
-
                             if (currentSpans.isNotEmpty()) {
-                                val isDuo = isSecondaryVocalAgent(currentLineAgent, primaryAgent)
-                                val mainSpans = currentSpans.filter { !it.isBg }
-                                val bgSpans = currentSpans.filter { it.isBg }.map { sp ->
-                                    // Clean outer parentheses on background vocal words like "(Angel," "angel)"
-                                    sp.copy(text = sp.text.removePrefix("(").removeSuffix(")").trim().ifEmpty { sp.text })
-                                }
-
-                                if (mainSpans.isNotEmpty()) {
-                                    val lStart = currentLineBegin ?: mainSpans.first().startMs
-                                    val lEnd = currentLineEnd ?: mainSpans.last().endMs
-                                    rawLines.add(
-                                        ParsedRawLine(
-                                            startMs = lStart,
-                                            endMs = max(lStart + 200.0, lEnd),
-                                            isBg = false,
-                                            isDuo = isDuo,
-                                            spans = mainSpans
-                                        )
+                                val lStart = minOf(pStartMs, currentSpans.first().startMs)
+                                val lEnd = maxOf(pEndMs, currentSpans.last().endMs)
+                                rawLines.add(
+                                    RawLine(
+                                        startMs = lStart,
+                                        endMs = lEnd,
+                                        spans = currentSpans.toList(),
+                                        isBg = pIsBg,
+                                        isDuo = pIsDuo,
+                                        isLineSyncedOnly = wasLineSyncedOnly
                                     )
-                                }
-                                if (bgSpans.isNotEmpty()) {
-                                    val bgStart = bgSpans.first().startMs
-                                    val bgEnd = bgSpans.last().endMs
-                                    rawLines.add(
-                                        ParsedRawLine(
-                                            startMs = bgStart,
-                                            endMs = max(bgStart + 200.0, bgEnd),
-                                            isBg = true,
-                                            isDuo = isDuo,
-                                            spans = bgSpans
-                                        )
-                                    )
-                                }
+                                )
                             }
+                            if (bgInlineSpans.isNotEmpty()) {
+                                val bgStart = bgInlineSpans.first().startMs
+                                val bgEnd = bgInlineSpans.last().endMs
+                                rawLines.add(
+                                    RawLine(
+                                        startMs = bgStart,
+                                        endMs = bgEnd,
+                                        spans = bgInlineSpans.toList(),
+                                        isBg = true,
+                                        isDuo = pIsDuo,
+                                        isLineSyncedOnly = false
+                                    )
+                                )
+                            }
+                            insideP = false
                         }
                     }
                 }
@@ -197,7 +411,7 @@ object TtmlParser {
             val wordModels = raw.spans.mapIndexed { wIdx, span ->
                 val isLast = wIdx == raw.spans.lastIndex
                 val duration = span.endMs - span.startMs
-                val shouldSplitLetters = duration >= 750.0 && span.text.length >= 3
+                val shouldSplitLetters = !raw.isLineSyncedOnly && duration >= 750.0 && span.text.length >= 3
                 val letters = if (shouldSplitLetters) {
                     val chars = span.text.map { it.toString() }
                     val charDuration = duration / chars.size
@@ -234,12 +448,79 @@ object TtmlParser {
                     words = wordModels,
                     isDotLine = false,
                     isBgLine = raw.isBg,
-                    isDuoLine = raw.isDuo
+                    isDuoLine = raw.isDuo,
+                    isLineSyncedOnly = raw.isLineSyncedOnly
                 )
             )
         }
 
         return result
+    }
+
+    /**
+     * Extracts songwriter names and provider attribution from `.ttml` XML headers (`<songwriter>`, `<ttm:copyright>`).
+     */
+    fun extractAttributionFromTtml(ttmlContent: String): LyricsAttributionInfo? {
+        if (ttmlContent.isBlank()) return null
+        val writers = mutableListOf<String>()
+        var isSpotify = false
+
+        try {
+            val factory = XmlPullParserFactory.newInstance()
+            factory.isNamespaceAware = false
+            val parser = factory.newPullParser()
+            parser.setInput(StringReader(ttmlContent))
+
+            var eventType = parser.eventType
+            var insideSongwriter = false
+            val writerBuf = StringBuilder()
+
+            while (eventType != XmlPullParser.END_DOCUMENT) {
+                when (eventType) {
+                    XmlPullParser.START_TAG -> {
+                        val tag = parser.name.lowercase()
+                        if (tag == "songwriter" || tag.endsWith(":songwriter")) {
+                            insideSongwriter = true
+                            writerBuf.clear()
+                        } else if (tag.contains("spotify")) {
+                            isSpotify = true
+                        }
+                    }
+                    XmlPullParser.TEXT -> {
+                        if (insideSongwriter) {
+                            writerBuf.append(parser.text ?: "")
+                        }
+                    }
+                    XmlPullParser.END_TAG -> {
+                        val tag = parser.name.lowercase()
+                        if (tag == "songwriter" || tag.endsWith(":songwriter")) {
+                            insideSongwriter = false
+                            val w = writerBuf.toString().trim()
+                            if (w.isNotEmpty()) writers.add(w)
+                        }
+                    }
+                }
+                eventType = parser.next()
+            }
+        } catch (_: Exception) {
+        }
+
+        if (writers.isEmpty()) {
+            val regex = Regex("<(?:[a-zA-Z0-9_]+:)?songwriter[^>]*>([^<]+)</(?:[a-zA-Z0-9_]+:)?songwriter>", RegexOption.IGNORE_CASE)
+            regex.findAll(ttmlContent).forEach { match ->
+                val w = match.groupValues[1].trim()
+                if (w.isNotEmpty()) writers.add(w)
+            }
+            if (ttmlContent.contains("spotify", ignoreCase = true)) {
+                isSpotify = true
+            }
+        }
+
+        return LyricsAttributionInfo(
+            songWriters = writers,
+            source = if (isSpotify) "spotify" else "apple_music",
+            syncPriority = LyricsSyncPriority.SYLLABLE
+        )
     }
 
     private fun isSecondaryVocalAgent(agent: String?, primaryAgent: String?): Boolean {
@@ -267,18 +548,14 @@ object TtmlParser {
             startTimeMs = startMs,
             endTimeMs = endMs,
             words = dots,
-            isDotLine = true,
-            isBgLine = false,
-            isDuoLine = false
+            isDotLine = true
         )
     }
 
-    private fun getAttrAnyNs(parser: XmlPullParser, localName: String): String? {
+    private fun getAttr(parser: XmlPullParser, vararg names: String): String? {
         for (i in 0 until parser.attributeCount) {
-            val name = parser.getAttributeName(i)
-            if (name.equals(localName, ignoreCase = true) ||
-                name.endsWith(":$localName", ignoreCase = true)
-            ) {
+            val attrName = parser.getAttributeName(i)
+            if (names.any { it.equals(attrName, ignoreCase = true) }) {
                 return parser.getAttributeValue(i)
             }
         }
@@ -287,47 +564,32 @@ object TtmlParser {
 
     fun parseTimeAttr(raw: String?): Double? {
         if (raw.isNullOrBlank()) return null
-        val s = raw.trim().lowercase()
-        return try {
-            when {
-                s.endsWith("ms") -> s.removeSuffix("ms").trim().toDouble()
-                s.endsWith("s") -> s.removeSuffix("s").trim().toDouble() * 1000.0
-                s.contains(":") -> {
-                    val parts = s.split(":")
-                    when (parts.size) {
-                        2 -> {
-                            val mins = parts[0].toDouble()
-                            val secs = parts[1].toDouble()
-                            (mins * 60.0 + secs) * 1000.0
-                        }
-                        3 -> {
-                            val hrs = parts[0].toDouble()
-                            val mins = parts[1].toDouble()
-                            val secs = parts[2].toDouble()
-                            (hrs * 3600.0 + mins * 60.0 + secs) * 1000.0
-                        }
-                        else -> null
-                    }
+        val s = raw.trim()
+        try {
+            if (s.endsWith("ms")) {
+                return s.removeSuffix("ms").trim().toDouble()
+            }
+            if (s.endsWith("s")) {
+                return s.removeSuffix("s").trim().toDouble() * 1000.0
+            }
+            val parts = s.split(":")
+            return when (parts.size) {
+                3 -> {
+                    val h = parts[0].toDouble()
+                    val m = parts[1].toDouble()
+                    val sec = parts[2].toDouble()
+                    (h * 3600.0 + m * 60.0 + sec) * 1000.0
                 }
-                else -> s.toDouble() * 1000.0
+                2 -> {
+                    val m = parts[0].toDouble()
+                    val sec = parts[1].toDouble()
+                    (m * 60.0 + sec) * 1000.0
+                }
+                1 -> parts[0].toDouble() * 1000.0
+                else -> null
             }
         } catch (_: Exception) {
-            null
+            return null
         }
     }
-
-    private data class ParsedRawSpan(
-        val text: String,
-        val startMs: Double,
-        val endMs: Double,
-        val isBg: Boolean
-    )
-
-    private data class ParsedRawLine(
-        val startMs: Double,
-        val endMs: Double,
-        val isBg: Boolean,
-        val isDuo: Boolean,
-        val spans: List<ParsedRawSpan>
-    )
 }

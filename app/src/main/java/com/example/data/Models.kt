@@ -2,6 +2,7 @@ package com.example.data
 
 import androidx.compose.ui.graphics.Color
 import androidx.room.Entity
+import androidx.room.Ignore
 import androidx.room.PrimaryKey
 
 @Entity(tableName = "tracks")
@@ -18,16 +19,22 @@ data class TrackEntity(
     val parentTreeUri: String,     // Directory reference (FileSystemDirectoryHandle equivalent)
     val baseFileName: String,      // Base filename without extension, e.g. "SongName"
     val extension: String,         // e.g. "flac", "mp3", "wav"
-    val coLocatedTtmlUri: String?, // Same-folder SongName.ttml URI or path if found
+    val coLocatedTtmlUri: String?, // Same-folder SongName.ttml / .lrc / .txt URI or path if found
     val embeddedTtmlContent: String? = null,
     val manualTtmlContent: String? = null,
-    val coverColorsCsv: String,    // 5 hex colors extracted from Album Art for Frosted Glass animation
+    val spicyLyricsJson: String? = null,       // Cached Spicy Lyrics JSON payload
+    val lyricsAttributionJson: String? = null, // Cached SongWriters + Maker/Uploader PFP attribution
+    val coverColorsCsv: String,    // Up to 9 hex colors extracted from Album Art for multi-orb background
     val coverArtPath: String? = null,
     val replayGainDb: Float = 0f,
     val lyricsOffsetMs: Int = 0,   // Per-track lyrics offset (-5000ms to +5000ms)
     val isBuiltInStudioTrack: Boolean = false
 ) {
+    @Ignore
+    private var memoizedPalette: List<Color>? = null
+
     fun parsePalette(): List<Color> {
+        memoizedPalette?.let { return it }
         val parts = coverColorsCsv.split(",").mapNotNull { hex ->
             try {
                 Color(android.graphics.Color.parseColor(hex.trim()))
@@ -35,18 +42,29 @@ data class TrackEntity(
                 null
             }
         }
-        return if (parts.size >= 3) parts else listOf(
+        val computed = if (parts.size >= 3) parts else listOf(
             Color(0xFF6366F1),
             Color(0xFFEC4899),
             Color(0xFF06B6D4),
             Color(0xFF8B5CF6),
+            Color(0xFFF59E0B),
+            Color(0xFF10B981),
+            Color(0xFFEF4444),
+            Color(0xFF3B82F6),
             Color(0xFF1E1B4B)
         )
+        memoizedPalette = computed
+        return computed
     }
 
     val effectiveTtmlContent: String?
         get() = manualTtmlContent?.takeIf { it.isNotBlank() }
             ?: embeddedTtmlContent?.takeIf { it.isNotBlank() }
+
+    val hasAnySyncedLyrics: Boolean
+        get() = coLocatedTtmlUri != null ||
+            effectiveTtmlContent != null ||
+            !spicyLyricsJson.isNullOrBlank()
 }
 
 @Entity(tableName = "playlists")

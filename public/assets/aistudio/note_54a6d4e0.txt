@@ -1,0 +1,99 @@
+# Getting started
+
+> Create an application, copy the snippet, run it. Your first real response in about a minute.
+
+You need an application to get a key. Creating one takes a few seconds and gives
+you a **secret key** — the one you use from a server you control.
+
+## 1. Create an application [#1-create-an-application]
+
+Go to [the dashboard](/dashboard/applications) and create an application. You
+will be shown a secret key exactly once. Store it somewhere your code can read
+it, like an environment variable:
+
+```bash
+export SPICY_LYRICS_SECRET_KEY="sl_sk_..."
+```
+
+Never commit it, and never put it in code that runs in a browser.
+
+## 2. Make a request [#2-make-a-request]
+
+```bash
+curl https://api.spicylyrics.org/v1/lyrics/TRACK_ID \
+  -H "Authorization: Bearer $SPICY_LYRICS_SECRET_KEY"
+```
+
+```python
+import os, requests
+
+response = requests.get(
+    "https://api.spicylyrics.org/v1/lyrics/TRACK_ID",
+    headers={"Authorization": f"Bearer {os.environ['SPICY_LYRICS_SECRET_KEY']}"},
+)
+lyrics = response.json()
+```
+
+```javascript
+// Node, or anywhere else you control the environment.
+const response = await fetch("https://api.spicylyrics.org/v1/lyrics/TRACK_ID", {
+  headers: {
+    Authorization: `Bearer ${process.env.SPICY_LYRICS_SECRET_KEY}`,
+  },
+})
+const lyrics = await response.json()
+```
+
+`TRACK_ID` can be a Spotify track id, an ISRC or an Apple Music track id. If you
+only have a title, [search for it](/docs/finding-tracks).
+
+## 3. Read the response [#3-read-the-response]
+
+```jsonc
+{
+	"Body": {
+		"Type": "Syllable",
+		"SongWriters": [
+			"Stefani Joanne Angelina Germanotta",
+			"Nādir Ḵayyāṭ"
+		],
+		"StartTime": 7.357,
+		"Content": [...],
+		"EndTime": 234.731,
+		"id": "1QV6tiMFM6fSOKOGLMHYYg",
+		"ids": {
+			"spotify": "1QV6tiMFM6fSOKOGLMHYYg",
+			"isrc": "USUM70824409",
+			"apple_music": "713369399",
+			"tidal": "77707019",
+			"youtube": "bESGLojNYSo"
+		},
+		"UploadAttribution": {
+			"Uploader": {
+				"id": "790942393255329803",
+				"username": "spikerko",
+				"avatar": "https://cdn.discordapp.com/avatars/790942393255329803/bb0b32161c04dc75bd06a39f13718a44.webp?size=256",
+				"hasProfileBanner": true,
+        "url": "https://spicylyrics.org/uid/790942393255329803"
+			},
+			"Maker": {
+				"id": "816650334255579137",
+				"username": "gc",
+				"avatar": "https://cdn.discordapp.com/avatars/816650334255579137/03ec15a143788b3ba3f2549982c2b0ab.webp?size=256",
+				"hasProfileBanner": false,
+        "url": "https://spicylyrics.org/uid/816650334255579137"
+			}
+		},
+		"source": "spicy_lyrics"
+	},
+	"Status": 200,
+	"Type": "object"
+}
+```
+
+## Next [#next]
+
+- [Finding tracks](/docs/finding-tracks): other ids, and search
+- [Sync sources](/docs/sync-sources) — which source answers, and why
+- [Attribution](/docs/attribution) — what to display, and when
+- [Keys](/docs/keys) — if your code does not run on a server you control

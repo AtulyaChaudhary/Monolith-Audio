@@ -1,6 +1,6 @@
 {
-  "summary": "Updated implementation plan addressing all 6 user requests: opaque/readable Settings & modal backdrops, strict NotSung word/letter visibility fix (zero premature 1.5-letter highlight), complete removal of all built-in example songs, Main + Smaller Background + Right-Aligned Duo TTML lyrics layout matching the reference screenshot, custom .ttf/.otf Font Upload for both Lyrics and Entire UI, and preserving full album-art colors on the Lyrics Screen even in Ultra Monochrome Mode.",
-  "updatedAt": "2026-11-05T21:29:03.549437539Z",
+  "summary": "Revised implementation plan adding a dedicated black tint/scrim layer over the blurred background on the Lyrics page so white lyrics stay crisp and readable even when the album art has bright or white colors, alongside zero-lag song list scrolling, restored Lyrics background settings, true pitch-black & white Monochrome mode with per-theme customizers, persistent embedded lyrics cache with Clear buttons, LRC/Plain-Text support with strict same-song matching, and smooth line/word animations.",
+  "updatedAt": "2026-11-06T13:32:00.051265543Z",
   "requestFeedback": true,
   "userFacing": true
 }

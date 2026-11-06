@@ -39,6 +39,7 @@ import androidx.compose.material.icons.filled.Lyrics
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.QueuePlayNext
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Sort
@@ -88,8 +89,10 @@ fun TopStudioBar(
     sortOption: SortOption,
     onSearchQueryChange: (String) -> Unit,
     onSortOptionChange: (SortOption) -> Unit,
+    onRescanClick: () -> Unit,
     onConnectFolderClick: () -> Unit,
     onImportFilesClick: () -> Unit,
+    onOpenSpicySearchClick: () -> Unit,
     onOpenGlassCustomizer: () -> Unit,
     onOpenSettings: () -> Unit
 ) {
@@ -104,7 +107,8 @@ fun TopStudioBar(
         FrostedGlassSurface(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(20.dp),
-            elevated = true
+            elevated = true,
+            opaqueModal = true
         ) {
             Column(
                 modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
@@ -118,29 +122,44 @@ fun TopStudioBar(
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
                             text = "MONOLITH AUDIO",
-                            style = MaterialTheme.typography.titleLarge.copy(letterSpacing = 1.2.sp),
+                            style = MaterialTheme.typography.titleLarge.copy(
+                                fontWeight = FontWeight.Black,
+                                letterSpacing = 1.0.sp
+                            ),
                             color = Color.White
                         )
                         Text(
-                            text = "LOCAL DIRECTORY & TTML STUDIO • BLUR ${blurRadiusDp.roundToInt()}DP",
+                            text = "MATERIAL YOU • SPICY LYRICS & TTML ENGINE",
                             style = MaterialTheme.typography.labelSmall,
                             color = MonoSilver
                         )
                     }
 
                     Row(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         MiniPillButton(
-                            text = "Glass & Blur",
-                            onClick = onOpenGlassCustomizer,
-                            tag = "open_glass_customizer_button"
+                            text = "Rescan",
+                            onClick = onRescanClick,
+                            tag = "rescan_library_button"
                         )
+                        IconButton(
+                            onClick = onOpenSpicySearchClick,
+                            modifier = Modifier
+                                .size(40.dp)
+                                .testTag("top_open_spicy_search_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Lyrics,
+                                contentDescription = "Search Spicy Lyrics",
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        }
                         IconButton(
                             onClick = onConnectFolderClick,
                             modifier = Modifier
-                                .size(42.dp)
+                                .size(40.dp)
                                 .testTag("connect_folder_button")
                         ) {
                             Icon(
@@ -152,7 +171,7 @@ fun TopStudioBar(
                         IconButton(
                             onClick = onImportFilesClick,
                             modifier = Modifier
-                                .size(42.dp)
+                                .size(40.dp)
                                 .testTag("import_files_button")
                         ) {
                             Icon(
@@ -164,7 +183,7 @@ fun TopStudioBar(
                         IconButton(
                             onClick = onOpenSettings,
                             modifier = Modifier
-                                .size(42.dp)
+                                .size(40.dp)
                                 .testTag("open_settings_button")
                         ) {
                             Icon(
@@ -276,6 +295,7 @@ fun AllSongsListView(
     onCreatePlaylistAndAdd: (String, TrackEntity) -> Unit,
     onConnectFolderClick: (() -> Unit)? = null,
     onImportFilesClick: (() -> Unit)? = null,
+    onRescanClick: (() -> Unit)? = null,
     headerContent: (@Composable () -> Unit)? = null,
     onRemoveFromPlaylist: ((TrackEntity) -> Unit)? = null,
     modifier: Modifier = Modifier
@@ -321,7 +341,7 @@ fun AllSongsListView(
                             color = Color.White
                         )
                         Text(
-                            text = "Connect a music folder or select audio (.flac, .mp3, .wav, .m4a, .ogg, .opus) and co-located .ttml lyrics files from your device.",
+                            text = "Connect a music folder, rescan your device folders, or select audio (.flac, .mp3, .wav, .m4a, .ogg, .opus) and co-located .ttml lyrics files.",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MonoSilver
                         )
@@ -338,6 +358,20 @@ fun AllSongsListView(
                                     )
                                 ) {
                                     Text("Connect Folder")
+                                }
+                            }
+                            if (onRescanClick != null) {
+                                Button(
+                                    onClick = onRescanClick,
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = MaterialTheme.colorScheme.primaryContainer,
+                                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                                    ),
+                                    modifier = Modifier.testTag("empty_rescan_button")
+                                ) {
+                                    Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Rescan")
                                 }
                             }
                             if (onImportFilesClick != null) {
@@ -359,10 +393,11 @@ fun AllSongsListView(
 
         itemsIndexed(
             items = tracks,
-            key = { _, t -> t.id }
+            key = { _, t -> t.id },
+            contentType = { _, _ -> "track_row" }
         ) { idx, track ->
             val isCurrent = track.id == currentPlayingTrackId
-            val hasTtml = track.coLocatedTtmlUri != null || track.effectiveTtmlContent != null
+            val hasTtml = track.hasAnySyncedLyrics
 
             FrostedGlassSurface(
                 shape = RoundedCornerShape(16.dp),
