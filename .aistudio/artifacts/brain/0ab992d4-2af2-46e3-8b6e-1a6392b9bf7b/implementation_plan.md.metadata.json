@@ -1,0 +1,6 @@
+{
+  "summary": "Updated implementation plan addressing all 6 user requests: opaque/readable Settings & modal backdrops, strict NotSung word/letter visibility fix (zero premature 1.5-letter highlight), complete removal of all built-in example songs, Main + Smaller Background + Right-Aligned Duo TTML lyrics layout matching the reference screenshot, custom .ttf/.otf Font Upload for both Lyrics and Entire UI, and preserving full album-art colors on the Lyrics Screen even in Ultra Monochrome Mode.",
+  "updatedAt": "2026-11-05T21:29:03.549437539Z",
+  "requestFeedback": true,
+  "userFacing": true
+}

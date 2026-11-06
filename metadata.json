@@ -1,0 +1,6 @@
+{
+  "name": "Monolith Audio",
+  "description": "Local-first music player with folder hierarchy preservation, co-located word-by-word TTML LyricsAnimator engine, 0.1x-5.0x speed and pitch controls, strict queue state machine, and customizable Frosted Glass & Pure Monochrome modes.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

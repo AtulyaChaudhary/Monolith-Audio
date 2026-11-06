@@ -1,0 +1,25 @@
+<resources>
+    <string name="app_name">Monolith Audio</string>
+    <string name="nav_all_songs">All Songs</string>
+    <string name="nav_categories">Categories</string>
+    <string name="cat_albums">Albums</string>
+    <string name="cat_folders">Folders</string>
+    <string name="cat_artists">Artists</string>
+    <string name="cat_playlists">Playlists</string>
+    <string name="action_scan_folder">Connect Folder</string>
+    <string name="action_import_files">Import Files</string>
+    <string name="action_add_to_queue">Add to Queue</string>
+    <string name="action_add_to_playlist">Add to Playlist</string>
+    <string name="action_load_ttml">Load .ttml File</string>
+    <string name="action_reset_1x">Reset (1.0x)</string>
+    <string name="label_speed">Speed</string>
+    <string name="label_pitch">Pitch</string>
+    <string name="label_queue">Playback Queue</string>
+    <string name="label_lyrics">Synced TTML Lyrics</string>
+    <string name="label_settings">Studio &amp; Glass Settings</string>
+    <string name="label_glass_customizer">Frosted Glass Customizer</string>
+    <string name="label_blur_slider">Background Blur Radius</string>
+    <string name="label_frost_opacity">Frosted Glass Opacity</string>
+    <string name="label_theatre_mode">Theatre / Fullscreen Mode</string>
+    <string name="empty_ttml_message">No co-located .ttml file found in this track\'s directory.</string>
+</resources>
