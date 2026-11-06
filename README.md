@@ -1,6 +1,6 @@
 # Monolith Audio
 
-**Monolith Audio** is a modern, high-performance Android music player built with **Kotlin** and **Jetpack Compose**. It features a physics-based syllable/word/line-synced lyrics stage, automatic and manual **Spicy Lyrics API** integration, local directory & SAF scanning with co-located lyrics discovery (`.ttml`, `.lrc`, `.txt`), granular **0.1x–5.0x Speed & Pitch DSP controls**, custom `.ttf`/`.otf` font uploads, and customizable **Material You**, **True Pitch-Black Monochrome**, and **Frosted Glass Aura** themes.
+**Monolith Audio** is a modern, high-performance Android music player built with **Kotlin** and **Jetpack Compose**. It features a physics-based syllable/word/line-synced lyrics stage, automatic and manual **Spicy Lyrics API** integration, local directory & SAF scanning with co-located lyrics discovery (`.ttml`, `.lrc`, `.txt`), granular **0.1x–5.0x Speed & Pitch DSP controls**, custom `.ttf`/`.otf` font uploads, and customizable **Material You**, **True Pitch-Black Monochrome**, and **Frosted Glass Aura** themes. This app uses Spicy Lyrics API to fetch song lyrics and uses your locally saved ttml based lyrics if are in the same directory as the music file. This project is inspired by Spikerko/spicy-lyrics/, TheX24/spicy-player-old/ and TheX24/spicy-player/.
 
 ---
 
